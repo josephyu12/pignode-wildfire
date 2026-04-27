@@ -17,7 +17,9 @@ dependencies = [
     "matplotlib>=3.7",
     "tqdm>=4.65",
     "pyyaml>=6.0",
-    "tfrecord>=1.14",
+    "zarr>=2.16,<3",
+    "xarray>=2023.6",
+    "huggingface-hub>=0.20",
 ]
 
 [project.optional-dependencies]
