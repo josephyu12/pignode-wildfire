@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wildfire"
+version = "0.1.0"
+description = "Physics-Informed Graph Neural ODE for wildfire spread prediction"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.1",
+    "torch-geometric>=2.4",
+    "torchdiffeq>=0.2.3",
+    "scikit-learn>=1.3",
+    "numpy>=1.24",
+    "pandas>=2.0",
+    "matplotlib>=3.7",
+    "tqdm>=4.65",
+    "pyyaml>=6.0",
+    "tfrecord>=1.14",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.1.0",
+    "ipykernel>=6.25",
+    "jupyter>=1.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
