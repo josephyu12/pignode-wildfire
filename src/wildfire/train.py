@@ -45,6 +45,7 @@ def make_model(name: str, edge_index, edge_dirs, norm_mean, norm_std, **kw):
             edge_index=edge_index, edge_dirs=edge_dirs,
             hidden=kw.get("hidden", 64),
             heads=kw.get("heads", 4),
+            ode_layers=kw.get("ode_layers", 2),
             t_end=kw.get("t_end", 1.0),
             n_eval_steps=kw.get("n_eval_steps", 2),
             monotone=kw.get("monotone", True),
@@ -88,10 +89,13 @@ def train(args):
     ns = get_norm()
     norm_mean, norm_std = ns["mean"], ns["std"]
 
-    # Data
-    train_ds = NDWSDataset("train", augment=True)
-    val_ds = NDWSDataset("eval", augment=False)
-    test_ds = NDWSDataset("test", augment=False)
+    # Data — in_memory=True is ~800x faster than zarr-on-disk slicing
+    log("loading data into memory...")
+    t = time.time()
+    train_ds = NDWSDataset("train", augment=True, in_memory=args.in_memory)
+    val_ds = NDWSDataset("eval", augment=False, in_memory=args.in_memory)
+    test_ds = NDWSDataset("test", augment=False, in_memory=args.in_memory)
+    log(f"  done in {time.time()-t:.1f}s")
     if args.subset_train:
         train_ds = Subset(train_ds, list(range(min(args.subset_train, len(train_ds)))))
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True,
@@ -108,6 +112,7 @@ def train(args):
     # Model
     kw = dict(
         hidden=args.hidden, heads=args.heads, n_layers=args.n_layers,
+        ode_layers=args.ode_layers,
         t_end=args.t_end, n_eval_steps=args.n_eval_steps,
         monotone=args.monotone, uniform_edges=args.uniform_edges,
         adjoint=args.adjoint, solver=args.solver, base=args.hidden // 2,
@@ -179,6 +184,8 @@ def parse():
     p.add_argument("--hidden", type=int, default=64)
     p.add_argument("--heads", type=int, default=4)
     p.add_argument("--n-layers", type=int, default=3)
+    p.add_argument("--ode-layers", type=int, default=2,
+                   help="number of stacked GAT layers inside the ODE derivative")
     p.add_argument("--t-end", type=float, default=1.0)
     p.add_argument("--n-eval-steps", type=int, default=2)
     p.add_argument("--connectivity", type=int, default=8)
@@ -193,6 +200,8 @@ def parse():
     p.add_argument("--max-steps", type=int, default=None, help="cap iterations per epoch (debug)")
     p.add_argument("--eval-batches", type=int, default=None, help="cap eval batches (debug)")
     p.add_argument("--subset-train", type=int, default=None, help="train on first N events only")
+    p.add_argument("--in-memory", action="store_true", default=True)
+    p.add_argument("--no-in-memory", dest="in_memory", action="store_false")
     args = p.parse_args()
     if args.exp is None:
         args.exp = args.model + ("_no_mono" if not args.monotone else "") + ("_uniform" if args.uniform_edges else "")

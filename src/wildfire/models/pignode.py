@@ -27,25 +27,34 @@ from ..graph import (
 
 
 class GATODEFunc(nn.Module):
-    """Time-derivative dh/dt parameterized by edge-conditioned GAT.
+    """Time-derivative dh/dt parameterized by stacked edge-conditioned GAT layers.
 
-    PyG's GATConv with edge_dim>0 implements:
+    PyG's GATConv with edge_dim>0 implements eq. (3) in the proposal:
         α_ij = softmax(LeakyReLU(a^T [Wh_i || Wh_j || W_e e_ij]))
-    which matches eq. (3) in the proposal exactly.
+
+    Stacking >1 GAT layer inside f gives the ODE function genuine multi-hop
+    message-passing depth per integration step, which the integration-only
+    formulation lacks. Each step thus performs ode_layers hops; integration
+    over T steps performs T*ode_layers hops total.
     """
 
     def __init__(self, hidden: int = 64, edge_dim: int = 3, heads: int = 4,
-                 dropout: float = 0.1):
+                 dropout: float = 0.1, ode_layers: int = 2):
         super().__init__()
-        self.gat = GATConv(
-            hidden, hidden, heads=heads, concat=False,
-            edge_dim=edge_dim, dropout=dropout, add_self_loops=False,
-        )
-        self.norm = nn.LayerNorm(hidden)
+        self.gats = nn.ModuleList([
+            GATConv(hidden, hidden, heads=heads, concat=False,
+                    edge_dim=edge_dim, dropout=dropout, add_self_loops=False)
+            for _ in range(ode_layers)
+        ])
+        self.norms = nn.ModuleList([nn.LayerNorm(hidden) for _ in range(ode_layers)])
         self.act = nn.SiLU()
+        # Scale-down the LAST GAT's projection so dh/dt is small at init -- a
+        # standard Neural ODE stability trick ("identity-init" the residual flow).
+        with torch.no_grad():
+            self.gats[-1].lin.weight.mul_(0.1)
         self._edge_index: torch.Tensor | None = None
         self._edge_attr: torch.Tensor | None = None
-        self.nfe: int = 0   # number-of-function-evaluations counter (reported in paper)
+        self.nfe: int = 0
 
     def set_context(self, edge_index: torch.Tensor, edge_attr: torch.Tensor):
         self._edge_index = edge_index
@@ -54,8 +63,11 @@ class GATODEFunc(nn.Module):
 
     def forward(self, t: torch.Tensor, h: torch.Tensor) -> torch.Tensor:
         self.nfe += 1
-        msg = self.gat(h, self._edge_index, edge_attr=self._edge_attr)
-        return self.act(self.norm(msg))
+        z = h
+        for i, (gat, norm) in enumerate(zip(self.gats, self.norms)):
+            msg = gat(z, self._edge_index, edge_attr=self._edge_attr)
+            z = self.act(norm(msg))
+        return z
 
 
 class PIGNODE(nn.Module):
@@ -67,6 +79,7 @@ class PIGNODE(nn.Module):
         hidden: int = 64,
         edge_dim: int = 3,
         heads: int = 4,
+        ode_layers: int = 2,
         t_end: float = 1.0,
         n_eval_steps: int = 2,
         monotone: bool = True,
@@ -93,7 +106,7 @@ class PIGNODE(nn.Module):
         self.encode = nn.Sequential(
             nn.Linear(in_dim, hidden), nn.SiLU(), nn.Linear(hidden, hidden)
         )
-        self.f = GATODEFunc(hidden, edge_dim=edge_dim, heads=heads)
+        self.f = GATODEFunc(hidden, edge_dim=edge_dim, heads=heads, ode_layers=ode_layers)
         self.head = nn.Sequential(
             nn.LayerNorm(hidden),
             nn.Linear(hidden, hidden), nn.SiLU(),
@@ -137,10 +150,12 @@ class PIGNODE(nn.Module):
         h_T = h_traj[-1]
         logits = self.head(h_T).view(B, 64, 64)
 
-        if self.monotone:
+        if self.monotone and not self.training:
             # Eq. (4): predicted prob >= initial fire prob (burn irreversibility).
-            # Implemented as: where init==1, force logit to a large positive value.
-            init_fire = x[:, 0]   # PrevFireMask, normalized but binary-valued.
+            # Applied only at inference -- during training, this hard floor would
+            # kill gradients on burning cells (where ~99% of label=1 mass lives),
+            # leaving the model to learn only from the rare new-ignition signal.
+            init_fire = x[:, 0]
             big = torch.full_like(logits, 6.0)   # σ(6) ≈ 0.998
             logits = torch.where(init_fire > 0.5, torch.maximum(logits, big), logits)
 

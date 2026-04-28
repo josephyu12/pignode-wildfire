@@ -19,10 +19,11 @@ from .models.baselines import collect_pixels, predict_full_split
 
 
 def run(name: str, model, n_train_events: int = 1500):
-    train_ds = NDWSDataset("train", augment=False)
-    test_ds = NDWSDataset("test", augment=False)
-    train_loader = DataLoader(train_ds, batch_size=32, shuffle=True, num_workers=0)
-    test_loader = DataLoader(test_ds, batch_size=32, shuffle=False, num_workers=0)
+    print(f"loading data into memory...")
+    train_ds = NDWSDataset("train", augment=False, in_memory=True)
+    test_ds = NDWSDataset("test", augment=False, in_memory=True)
+    train_loader = DataLoader(train_ds, batch_size=64, shuffle=True, num_workers=0)
+    test_loader = DataLoader(test_ds, batch_size=64, shuffle=False, num_workers=0)
 
     print(f"=== {name} ===")
     t = time.time()

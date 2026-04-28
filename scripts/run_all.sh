@@ -22,17 +22,23 @@ echo "[$(date +%H:%M:%S)] >>> LR + RF" | tee -a "$LOG"
 python -m wildfire.baselines_run 2>&1 | tee -a "$LOG"
 echo "[$(date +%H:%M:%S)] <<< LR + RF done" | tee -a "$LOG"
 
-# ConvAE (Huot et al. replication)
-run convae --model convae --epochs 10 --batch-size 32
+# Fast baselines on FULL train (in-memory => no I/O bottleneck)
+run convae --model convae --epochs 12 --batch-size 64
+run gcn    --model gcn    --epochs 8  --batch-size 32
+run sage   --model sage   --epochs 8  --batch-size 32
 
-# Graph baselines
-run gcn  --model gcn  --epochs 8 --batch-size 16
-run sage --model sage --epochs 8 --batch-size 16
-run gat  --model gat  --epochs 8 --batch-size 16
+# GAT and PI-GNODE on 5K-event subsample (compute-bound on M1).
+# Eval on full eval (1877) capped at 30 batches per epoch for speed; final test on full test.
+SUB="--subset-train 5000 --eval-batches 30"
 
-# PI-GNODE main + ablations
-run pignode         --model pignode --epochs 8 --batch-size 16
-run pignode_no_mono --model pignode --epochs 8 --batch-size 16 --no-monotone
-run pignode_uniform --model pignode --epochs 8 --batch-size 16 --uniform-edges
+run gat  --model gat  --epochs 8 --batch-size 32 $SUB
+
+# PI-GNODE main + ablations.
+# t_end=2.0 with 2-step RK4 = 8 NFE -> deeper effective message-passing than 1-step.
+# LR 1e-3 (3x higher) since model was undertrained at 3e-4.
+PIG="--model pignode --epochs 8 --batch-size 16 --n-eval-steps 2 --t-end 2.0 --lr 1e-3 $SUB"
+run pignode         $PIG
+run pignode_no_mono $PIG --no-monotone
+run pignode_uniform $PIG --uniform-edges
 
 echo "=== run_all done $(date) ===" >>"$LOG"
