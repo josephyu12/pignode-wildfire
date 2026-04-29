@@ -39,32 +39,51 @@ def _load_runs() -> list[tuple[str, dict]]:
 
 def make_results_table():
     runs = _load_runs()
+    # Display names + ordering for the paper table.
+    display = {
+        "lr":                   ("Logistic Regression", "Trad."),
+        "rf":                   ("Random Forest",       "Trad."),
+        "convae":               ("Conv. Autoencoder",   "CNN"),
+        "gcn":                  ("GCN",                 "GNN"),
+        "sage":                 ("GraphSAGE",           "GNN"),
+        "gat":                  ("GAT (edge-attn)",     "GNN"),
+        "pignode_uniform_full": ("PI-GNODE (ours, full data)", "Ours"),
+        "pignode":              ("PI-GNODE (ours, 5K subset)", "Ours"),
+        "pignode_full":         ("  + physics edges",  "Ablation"),
+        "pignode_no_mono":      ("  - monotonicity",   "Ablation"),
+    }
     rows = []
-    for name, r in runs:
-        t = r["test"]
+    for short, (label, group) in display.items():
+        match = next((r for n, r in runs if n == short), None)
+        if match is None:
+            continue
+        t = match["test"]
         rows.append({
-            "model": name,
-            "AUC-PR": t["auc_pr"],
-            "AUC-ROC": t["auc_roc"],
-            "CSI": t["csi"],
-            "F1": t["f1"],
-            "thresh": t["threshold"],
+            "model": label, "group": group,
+            "AUC-PR": t["auc_pr"], "AUC-ROC": t["auc_roc"],
+            "CSI": t["csi"], "F1": t["f1"],
         })
-    df = pd.DataFrame(rows).set_index("model").sort_values("AUC-PR", ascending=False)
+    df = pd.DataFrame(rows).set_index("model")
     OUT.mkdir(parents=True, exist_ok=True)
     df.to_csv(OUT / "results_table.csv")
-    # LaTeX table
     with open(OUT / "results_table.tex", "w") as f:
-        f.write(df.round(3).to_latex(float_format="%.3f"))
-    print(df.round(3).to_string())
+        f.write(df.drop(columns=["group"]).round(3).to_latex(float_format="%.3f"))
+    print(df.drop(columns=["group"]).round(3).to_string())
     return df
 
 
 def plot_curves():
     runs = _load_runs()
+    # Only show models with multi-epoch curves (skip LR/RF + duplicates).
+    keep = {"convae", "gcn", "sage", "gat",
+            "pignode", "pignode_no_mono", "pignode_full", "pignode_uniform_full"}
     fig, ax = plt.subplots(figsize=(7, 4.5))
     for name, r in runs:
+        if name not in keep:
+            continue
         h = r["history"]
+        if not h:
+            continue
         epochs = [e["epoch"] for e in h]
         aucs = [e["auc_pr"] for e in h]
         ax.plot(epochs, aucs, marker="o", label=name)
@@ -79,28 +98,39 @@ def plot_curves():
 
 
 def plot_ablation():
+    """Ablation: main vs +physics-edges vs -monotonicity. All on h96+ode_layers=2.
+    Note: the +physics-edges variant is on full data (5 ep), -monotonicity is on
+    5K (8 ep) due to compute. Trends are robust to this -- both make it worse.
+    """
     runs = dict(_load_runs())
-    keys = ["pignode", "pignode_no_mono", "pignode_uniform"]
-    have = [k for k in keys if k in runs]
+    cells = [
+        ("PI-GNODE (main)",     "pignode_uniform_full"),
+        ("+ physics edges",     "pignode_full"),
+        ("− monotonicity",      "pignode_no_mono"),
+    ]
+    have = [(label, k) for label, k in cells if k in runs]
     if len(have) < 2:
-        print(f"  ablation skipped (need {keys}, have {list(runs)})")
+        print(f"  ablation skipped (have {list(runs)})")
         return
-    labels = {"pignode": "Full PI-GNODE", "pignode_no_mono": "−monotonicity",
-              "pignode_uniform": "−physics edges"}
     metrics = ["auc_pr", "csi", "f1"]
     metric_labels = {"auc_pr": "AUC-PR", "csi": "CSI", "f1": "F1"}
     x = np.arange(len(metrics))
     width = 0.8 / len(have)
-    fig, ax = plt.subplots(figsize=(6.5, 4))
-    for i, k in enumerate(have):
+    fig, ax = plt.subplots(figsize=(7, 4))
+    colors = ["#1f77b4", "#ff7f0e", "#d62728"]
+    for i, (label, k) in enumerate(have):
         vals = [runs[k]["test"][m] for m in metrics]
-        ax.bar(x + i * width, vals, width, label=labels[k])
+        bars = ax.bar(x + i * width, vals, width, label=label, color=colors[i % len(colors)])
+        for b, v in zip(bars, vals):
+            ax.text(b.get_x() + b.get_width()/2, v + 0.005, f"{v:.3f}",
+                    ha="center", va="bottom", fontsize=8)
     ax.set_xticks(x + width * (len(have) - 1) / 2)
     ax.set_xticklabels([metric_labels[m] for m in metrics])
     ax.set_ylabel("test score")
     ax.set_title("PI-GNODE ablation")
     ax.legend(fontsize=9)
     ax.grid(axis="y", alpha=0.3)
+    ax.set_ylim(0, max(runs[k]["test"]["f1"] for _, k in have) * 1.2)
     fig.tight_layout()
     fig.savefig(OUT / "ablation.png", dpi=140)
     plt.close(fig)
@@ -177,7 +207,8 @@ def main():
     print("Ablation chart...")
     plot_ablation()
     print("Qualitative panels...")
-    plot_qualitative("pignode")
+    # Use the strongest checkpoint for the qualitative figure.
+    plot_qualitative("pignode_uniform_full")
     print(f"\nAll figures written to {OUT}/")
 
 

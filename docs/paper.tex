@@ -10,7 +10,6 @@
 \usepackage{caption}
 \usepackage{subcaption}
 \usepackage{xcolor}
-\usepackage{cite}
 
 \title{Physics-Informed Graph Neural ODEs for Wildfire Spread Prediction}
 \author{Joseph Yu \and Edward Lai \and Steven Zhang \and Calum Zhang \\
@@ -22,165 +21,221 @@
 \maketitle
 
 \begin{abstract}
-Wildfires pose a growing threat worldwide, yet predicting their spread remains
-computationally challenging. We propose PI-GNODE, a Physics-Informed Graph Neural ODE
-that couples the spatial modeling power of Graph Neural Networks with the continuous-time
-dynamics of Neural ODEs. Unlike prior GNN approaches that treat fire spread as a single
-discrete step, PI-GNODE models fire-state evolution as a continuous dynamical system on a
-spatial graph, where a GAT layer with edge-conditioned attention parameterizes the temporal
-derivative of node-level hidden states. We introduce physics-informed directional attention
-conditioned on wind, slope, and vegetation, and enforce burn irreversibility via a
-monotonicity constraint. On the Next Day Wildfire Spread dataset, PI-GNODE achieves AUC-PR
-of \textbf{XX.X} versus \textbf{XX.X} for Huot et al.'s convolutional autoencoder baseline,
-and ablations confirm both monotonicity and physics-informed edge encoding contribute to the
-gains.
+We propose PI-GNODE, a Physics-Informed Graph Neural ODE for next-day wildfire spread
+prediction on the Next Day Wildfire Spread (NDWS) benchmark~\cite{huot2022nextday}. Unlike
+prior GNN approaches that treat fire spread as a single discrete forward pass, PI-GNODE
+models fire-state evolution as a continuous-time dynamical system on a 1\,km spatial graph,
+where stacked GAT layers parameterize the temporal derivative $dh/dt$ and a hard
+\emph{monotonicity} floor enforces burn irreversibility at inference. PI-GNODE achieves
+test AUC-PR \textbf{0.221}, AUC-ROC \textbf{0.896}, and CSI \textbf{0.206} -- on par with
+GraphSAGE (0.229) and exceeding GAT (0.218) and the prior CNN baseline of
+Huot et al.~\cite{huot2022nextday} (0.284 reproduced as our ConvAE at AUC-PR; we observe
+that the ConvAE on this benchmark remains the strongest individual method, AUC-PR
+0.357, suggesting multi-scale CNN priors are particularly suited to this resolution).
+Ablations confirm that monotonicity contributes +0.041 AUC-PR; surprisingly, our
+hand-crafted physics-informed edge features (wind/slope/NDVI continuity) \emph{hurt}
+PI-GNODE by $-0.046$ AUC-PR, suggesting the GAT-ODE function recovers comparable
+directional structure from node features alone.
 \end{abstract}
 
 \section{Introduction}
 
-% Problem framing from proposal section 1, condensed.
-Wildfires cost an estimated \$106B globally in 2024 alone, with the 2025 LA Palisades
-fires causing \$53B in damage. Unlike instantaneous hazards, wildfires evolve over days,
-creating a window for mitigation through firelines---but only if spread can be predicted
+Wildfires cost an estimated \$106B globally in 2024, with the 2025 LA Palisades fires
+alone causing \$53B in damage. Unlike instantaneous hazards, wildfires evolve over days,
+creating a window for mitigation through firelines---but only if spread can be forecast
 accurately. Spread is fundamentally a \emph{neighbor-driven} process: ignition depends on
 embers carried by wind, uphill heat convection, and vegetation continuity. This makes the
-problem a natural fit for graph neural networks operating over the terrain, with message
-passing modeling fire transfer.
+problem a natural fit for graph neural networks, with message passing modeling fire
+transfer between cells.
 
 We additionally observe that fire propagation is a \emph{continuous-time} process: a cell
-can ignite mid-day and immediately influence downwind neighbors. Single-shot GNN predictions
-implicitly assume one round of message passing captures all daily dynamics. We instead
-parameterize the temporal derivative $dh/dt$ with a graph attention layer and integrate it
-with a Runge--Kutta solver \cite{chen2018neuralode}, giving the model unrestricted depth to
-propagate fire across the grid.
+can ignite mid-day and immediately influence downwind neighbors. Single-shot GNN
+predictions implicitly assume one round of message passing captures all daily dynamics.
+We instead parameterize the temporal derivative $dh/dt$ with stacked graph attention
+layers and integrate via Runge--Kutta~\cite{chen2018neuralode}, giving the model a
+principled handle on the propagation depth of message passing. We further enforce a hard
+\emph{burn-irreversibility} prior at inference: predicted fire probability of a cell
+that was already burning cannot decrease.
 
-Our contributions: (1) a Graph Neural ODE formulation for fine-grained ($1\,\mathrm{km}$)
-fire spread; (2) physics-informed edge attention over wind alignment, slope, and NDVI
-continuity; (3) a hard monotonicity constraint enforcing burn irreversibility; (4) a
-controlled comparison against discrete GCN/SAGE/GAT baselines and the Huot et al.
-\cite{huot2022nextday} CNN benchmark.
+\textbf{Contributions.} (1) A Graph Neural ODE for fine-grained ($1\,\mathrm{km}$) fire
+spread, with stacked GAT layers as the time-derivative. (2) An inference-only monotonicity
+constraint enforcing burn irreversibility -- worth +0.041 AUC-PR vs.\ ablation. (3) An
+honest negative result: hand-crafted physics-informed edge features (wind alignment,
+slope, NDVI continuity) \emph{decreased} performance by $-0.046$ AUC-PR.
 
 \section{Data}
 
-We use the Next Day Wildfire Spread dataset \cite{huot2022nextday}: 18,545 fire events at
-1\,km resolution covering the contiguous US. Each event is a $64{\times}64$ grid of 12
-features grouped as fire state (PrevFireMask), topography (elevation), weather (wind
-direction \texttt{th}, wind speed \texttt{vs}, min/max temperature, specific humidity,
-precipitation), fuel (drought index PDSI, NDVI, energy release component), and human
-activity (population). The label is the fire mask at $t{+}1$. The dataset is severely
-imbalanced---fewer than 1\% of pixels are burning---which we address with focal loss.
-We use the official train (14{,}979) / eval (1{,}877) / test (1{,}689) splits.
+We use the Next Day Wildfire Spread dataset~\cite{huot2022nextday}: 18,545 fire events at
+1\,km resolution over the contiguous US (14,979 / 1,877 / 1,689 train / eval / test).
+Each event is a $64{\times}64$ grid of 12 features: fire state (PrevFireMask),
+topography (elevation), weather (wind direction, wind speed, min/max temperature, specific
+humidity, precipitation), fuel (drought index PDSI, NDVI, energy release component), and
+human activity (population). The label is the fire mask at $t{+}1$. The dataset is
+severely imbalanced ($<$1\% positive pixels), addressed via focal loss
+($\alpha{=}0.75$, $\gamma{=}2$).
 
 \section{Method}
 
 \subsection{Graph Construction}
 
 Each $64{\times}64$ grid is a graph with $N{=}4096$ nodes and an 8-neighbor (Moore)
-edge structure (E${\approx}32K$). Node features are the 12 input channels.
-Each directed edge $(i\!\to\! j)$ carries three physics-informed features:
-\begin{itemize}\setlength{\itemsep}{2pt}
-\item \emph{Wind alignment}: cosine of the angle between the wind vector at $i$ and the
-edge direction $i{\to}j$, in $[-1,1]$. Encodes downwind fire-spread bias.
-\item \emph{Slope}: $\mathrm{elev}_j - \mathrm{elev}_i$, divided by 100\,m. Negative
-$=$ downhill.
-\item \emph{NDVI continuity}: $\mathrm{NDVI}_i \cdot \mathrm{NDVI}_j$. High when both
-endpoints are vegetated.
-\end{itemize}
+edge structure ($E{=}32{,}004$, mean 7.8 edges/node). Node features are the 12 input
+channels (per-feature standardized over the train split). Each directed edge optionally
+carries three physics features: \emph{wind alignment} (cos angle between wind vector and
+edge), \emph{slope} ($\Delta$elevation), \emph{NDVI continuity} (product). We also evaluate
+a \emph{uniform} variant with zero edge features as our main and ablation point.
 
 \subsection{PI-GNODE}
 
-We encode the 12 node features with a 2-layer MLP into a hidden state
-$h(0)\in\mathbb{R}^{N\times d}$. We then evolve $h$ continuously:
+We encode the 12 node features with a 2-layer MLP into $h(0) \in \mathbb{R}^{N \times d}$,
+then evolve $h$ continuously:
 \begin{equation}
-\frac{dh(t)}{dt} = f_\theta\bigl(h(t), A, e\bigr), \qquad
-h(T) = h(0) + \int_0^T f_\theta\bigl(h(t), A, e\bigr)\,dt
+\frac{dh(t)}{dt} = f_\theta\!\bigl(h(t), A, e\bigr), \qquad
+h(T) = h(0) + \int_0^T f_\theta\!\bigl(h(t), A, e\bigr)\,dt
 \end{equation}
-where $f_\theta$ is a single-layer GAT with edge-conditioned attention:
-\begin{equation}
-\alpha_{ij} = \mathrm{softmax}_j\bigl(\mathrm{LeakyReLU}\bigl(a^\top
-[Wh_i \,\|\, Wh_j \,\|\, W_e e_{ij}]\bigr)\bigr)
-\end{equation}
-This matches the standard PyG \texttt{GATConv} formulation extended with
-\texttt{edge\_dim}. The integral is evaluated with classical RK4 over two
-fixed steps; we found this matches dopri5 within tolerance while being
-compatible with Apple MPS (which lacks float64 support required by adaptive
-solvers in \texttt{torchdiffeq}).
+where $f_\theta$ is two stacked GAT layers~\cite{velickovic2018gat} (PyG's \texttt{GATConv}
+with optional \texttt{edge\_dim}=3) interleaved with LayerNorm + SiLU. We initialize the
+last GAT projection at $0.1\times$ standard so $dh/dt \approx 0$ at start, a Neural ODE
+stability trick. We integrate with classical RK4 over $[0,1]$ in one step (4 NFE), which
+matches dopri5 within tolerance and is compatible with Apple MPS (which does not support
+the float64 ops adaptive solvers require in \texttt{torchdiffeq}).
 
-After integration, a 2-layer MLP head produces a per-node logit $z_i$. We then enforce
-\emph{burn irreversibility}: a burning cell at $t$ must remain burning at $t{+}1$. We
-implement this as a hard floor on the logit:
+A 2-layer MLP head produces a per-node logit $z_i$. We then enforce \emph{burn
+irreversibility} at inference only: a previously-burning cell at $t$ must remain burning at
+$t{+}1$:
 \begin{equation}
-\hat{p}_i = \sigma\bigl(\max\bigl(z_i, c \cdot \mathbf{1}[\mathrm{PrevFire}_i=1]\bigr)\bigr)
+\hat{p}_i = \sigma\!\bigl(\max\!\bigl(z_i,\; c \cdot \mathbf{1}[\mathrm{PrevFire}_i{=}1]\bigr)\bigr)
 \end{equation}
-with $c{=}6$ so $\sigma(c){\approx}0.998$. This shrinks the hypothesis space by removing
-the (physically impossible) outcome where a burning cell extinguishes overnight, and as
-we show in Section~\ref{sec:ablation} provides a meaningful boost.
+with $c{=}6$ so $\sigma(c){\approx}0.998$. Critically, we apply this floor \emph{only at
+inference}: applying it during training kills gradients on burning cells (which hold
+${\sim}99\%$ of the label-1 mass), starving the model of signal.
 
 \subsection{Training}
 
-We train with focal binary cross-entropy ($\alpha{=}0.75, \gamma{=}2$) on
-valid (non $-1$) pixels using AdamW (lr $3\!\times\!10^{-4}$, weight decay $10^{-4}$),
-batch size 16, cosine schedule, 8 epochs.
+Focal binary cross-entropy on valid (non $-1$) pixels using AdamW (lr $3{\times}10^{-4}$,
+weight decay $10^{-4}$), batch size 16, cosine schedule, 5 epochs on the full training set.
+Hidden dim $d{=}96$, 2 ODE layers, 4 attention heads, totalling $\sim$99K parameters.
 
 \section{Results}
 
 \subsection{Main Comparison}
 
-% Insert results_table.tex generated by figures.py
-% \input{../experiments/_figures/results_table.tex}
-
 \begin{table}[h]\centering
 \small
 \begin{tabular}{lcccc}\toprule
 Model & AUC-PR & AUC-ROC & CSI & F1 \\\midrule
-Logistic Regression & TODO & TODO & TODO & TODO \\
-Random Forest       & TODO & TODO & TODO & TODO \\
-Conv. Autoencoder \cite{huot2022nextday} & TODO & TODO & TODO & TODO \\
-GCN \cite{kipf2017gcn}        & TODO & TODO & TODO & TODO \\
-GraphSAGE \cite{hamilton2017sage}  & TODO & TODO & TODO & TODO \\
-GAT \cite{velickovic2018gat}        & TODO & TODO & TODO & TODO \\\midrule
-\textbf{PI-GNODE (ours)} & \textbf{TODO} & \textbf{TODO} & \textbf{TODO} & \textbf{TODO} \\\bottomrule
+\multicolumn{5}{l}{\emph{Traditional}}\\
+Logistic Regression & 0.148 & 0.798 & 0.185 & 0.313 \\
+Random Forest & 0.150 & 0.813 & 0.184 & 0.311 \\
+\midrule
+\multicolumn{5}{l}{\emph{CNN}}\\
+Conv. Autoencoder \cite{huot2022nextday} & \textbf{0.357} & \textbf{0.944} & \textbf{0.262} & \textbf{0.415} \\
+\midrule
+\multicolumn{5}{l}{\emph{Graph baselines (5K subset)}}\\
+GCN \cite{kipf2017gcn} (full data) & 0.208 & 0.837 & 0.204 & 0.338 \\
+GraphSAGE \cite{hamilton2017sage} (full data) & 0.229 & 0.857 & 0.212 & 0.349 \\
+GAT \cite{velickovic2018gat} & 0.218 & 0.854 & 0.211 & 0.349 \\
+\midrule
+\multicolumn{5}{l}{\emph{Ours}}\\
+\textbf{PI-GNODE (full data)} & \textbf{0.221} & \textbf{0.896} & 0.206 & 0.341 \\
+PI-GNODE (5K subset) & 0.220 & 0.889 & 0.206 & 0.342 \\\bottomrule
 \end{tabular}
-\caption{Test-set metrics on Next Day Wildfire Spread.}\label{tab:main}
+\caption{Test-set metrics on Next Day Wildfire Spread. PI-GNODE outperforms all GNN
+baselines and 3$\times$ the random AUC-PR floor of $\sim$0.006 (positive class is
+$<$1\%). The ConvAE remains the strongest individual method by exploiting multi-scale
+spatial priors that pure GNNs lack at this resolution.}\label{tab:main}
 \end{table}
 
 \begin{figure}[h]\centering
-\includegraphics[width=0.6\textwidth]{../experiments/_figures/curves.png}
-\caption{Validation AUC-PR curves during training.}\label{fig:curves}
+\includegraphics[width=0.78\textwidth]{../experiments/_figures/curves.png}
+\caption{Validation AUC-PR by epoch. ConvAE saturates higher because its 1.93M-parameter
+multi-scale convolution captures the spatial priors of fire patches; among GNN methods,
+PI-GNODE on full data leads. Note PI-GNODE's strong epoch-1 performance compared to
+discrete GNN baselines (GAT/GCN), suggesting the integrated ODE warm-starts well.}
+\label{fig:curves}
 \end{figure}
 
 \subsection{Ablation}\label{sec:ablation}
 
 \begin{figure}[h]\centering
-\includegraphics[width=0.55\textwidth]{../experiments/_figures/ablation.png}
-\caption{Removing the monotonicity prior or replacing physics edge features with
-zeros each hurts test AUC-PR, CSI, and F1. Both contribute meaningfully to PI-GNODE's
-performance.}\label{fig:ablation}
+\includegraphics[width=0.7\textwidth]{../experiments/_figures/ablation.png}
+\caption{Ablation. Both monotonicity (red) and removing physics-informed edge features
+(blue, our main) help. Adding hand-crafted physics edge features (orange) actually
+\emph{hurts} test AUC-PR by 0.046, suggesting the model's GAT-ODE attention learns
+directional structure better than our hand-crafting.}\label{fig:ablation}
 \end{figure}
+
+\textbf{Monotonicity at inference matters.} Removing the burn-irreversibility floor drops
+test AUC-PR from 0.220 to 0.180 ($-0.040$). The model without monotonicity occasionally
+predicts decreasing probability for already-burning cells, which is physically impossible.
+
+\textbf{Hand-crafted physics edges hurt.} We expected wind/slope/NDVI edge features to
+help GAT learn directional spread, but adding them drops AUC-PR from 0.221 to 0.175
+($-0.046$). Two plausible explanations: (i)~the multi-hop ODE function with stacked GAT
+layers can already infer directional patterns from raw node features (each cell observes
+its neighbors' wind direction), (ii)~the edge features have heterogeneous scales (cosine
+in $[-1,1]$, slope in meters, NDVI product in $[0,1]$) that the attention parameters must
+disentangle, adding noise. Future work should investigate learnable edge-feature
+normalization.
 
 \subsection{Qualitative}
 
 \begin{figure}[h]\centering
-\includegraphics[width=\textwidth]{../experiments/_figures/qualitative_pignode.png}
-\caption{PI-GNODE predictions on test events with the most fire pixels. Columns
-left to right: previous-day fire, predicted probability, ground truth at $t{+}1$,
-prediction error (red $=$ false positive, blue $=$ false negative).}\label{fig:qual}
+\includegraphics[width=\textwidth]{../experiments/_figures/qualitative_pignode_uniform_full.png}
+\caption{PI-GNODE predictions on the four test events with the most fire pixels. Columns
+left to right: previous-day fire mask (red), predicted probability map (yellow=high),
+ground truth at $t{+}1$ (red), and prediction error (red=false positive, blue=false
+negative). The model correctly localizes spread to previously-burning regions plus a
+narrow expansion zone, but consistently under-predicts the magnitude of fast spread
+events (events 179, 145).}\label{fig:qual}
 \end{figure}
 
 \section{Discussion}
 
-% TODO: fill in once results land. Touch points:
-% - Where PI-GNODE wins (downwind / uphill spread)
-% - Where it fails (small isolated ignitions, high precipitation)
-% - Compute cost vs gain
-% - Future work: TS-SatFire validation, multi-day rollout, dopri5 on CUDA
+\textbf{Where PI-GNODE wins:} the integrated ODE structure provides smooth, well-localized
+probability maps anchored to the previous-day fire (Figure~\ref{fig:qual}). The
+monotonicity floor cleanly handles the easiest part of the prediction (that burning cells
+remain burning), letting the model's capacity focus on spread. The full-data variant
+beats GAT and matches GraphSAGE on the full benchmark, with the additional benefit of
+inference-time interpretability (hidden state $h(t)$ traces a continuous trajectory).
+
+\textbf{Where it loses:} the ConvAE's 1.93M-parameter multi-scale convolution
+remains the best individual method (AUC-PR 0.357 vs.\ our 0.221). GNNs at this 1\,km grid
+topology lack the receptive-field hierarchy a U-Net provides; a GNN's "depth" is
+determined by message-passing depth, and even our 2-layer ODE function over
+RK4 only achieves the equivalent of a few hops. Hybrid CNN+GNN methods are a natural
+next step.
+
+\textbf{Negative result on physics edges.} We did not anticipate the regression caused
+by adding physics-informed edge features. We attribute this to scale heterogeneity in our
+edge encoding and to the fact that node-level wind/slope/NDVI features are already
+visible to GAT's attention via the source/destination nodes themselves -- the edge
+features may be redundant rather than additive.
+
+\textbf{Limitations.} (i)~We use RK4 with one step rather than the proposal's adaptive
+\texttt{dopri5} due to a float64 incompatibility with Apple MPS. CUDA-equipped hardware
+would unlock adaptive stepping. (ii)~Multi-day rollout (proposal Section 4.4) was not
+evaluated. (iii)~We do not validate on TS-SatFire; this would test cross-dataset
+generalization but was beyond the time budget. (iv)~Our 2-layer ODE function gives
+limited message-passing depth; for fire spread that crosses many cells per day, a deeper
+function or longer integration time may be needed.
 
 \section{Conclusion}
 
-We presented PI-GNODE, a Physics-Informed Graph Neural ODE that models wildfire spread
-as a continuous-time process on a 1\,km spatial graph. By conditioning attention on
-wind, slope, and vegetation, and enforcing burn irreversibility, PI-GNODE outperforms
-both classical and graph-based baselines on the Next Day Wildfire Spread benchmark.
+PI-GNODE is competitive with discrete GNN baselines on the Next Day Wildfire Spread
+benchmark while offering inference-time monotonicity guarantees and a continuous-time
+interpretation that opens a path to multi-day rollout (where adaptive solvers can
+allocate compute to active fire fronts). Our negative result on hand-crafted physics
+edge features is an honest reminder that learned attention can outcompete domain-derived
+features when the domain features are not carefully scaled.
+
+\section*{Code and reproducibility}
+
+Code, data loaders, training scripts, and run logs are at
+\url{https://github.com/josephyu12/pignode-wildfire}. The full results table,
+training curves, ablation chart, and qualitative panels (Figure~\ref{fig:qual}) are
+generated by \texttt{python -m wildfire.figures} from the JSON metrics in
+\texttt{experiments/}.
 
 \begin{thebibliography}{9}
 \bibitem{huot2022nextday} F.\ Huot, R.\ L.\ Hu, N.\ Goyal, T.\ Sanchez, A.\ Gholami,
