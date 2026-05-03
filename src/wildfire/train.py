@@ -187,11 +187,11 @@ def train(args):
         for i, (x, y) in enumerate(train_loader):
             x = x.to(device, non_blocking=True)
             y = y.to(device, non_blocking=True)
-            out = model(x)
-            if isinstance(out, tuple):
-                logits, dyn_norms = out
+            model_out = model(x)
+            if isinstance(model_out, tuple):
+                logits, dyn_norms = model_out
             else:
-                logits, dyn_norms = out, None
+                logits, dyn_norms = model_out, None
 
             loss_focal = focal_bce_with_logits(
                 logits, y, alpha=args.focal_alpha, gamma=args.focal_gamma
