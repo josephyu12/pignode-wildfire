@@ -1,0 +1,21 @@
+=== pignode_no_mono | model=pignode | device=mps ===
+loading data into memory...
+  done in 4.2s
+params: 45,569
+=== pignode_no_mono | model=pignode | device=mps ===
+loading data into memory...
+  done in 4.2s
+params: 99,073
+=== pignode_no_mono | model=pignode | device=mps ===
+loading data into memory...
+  done in 4.1s
+params: 99,073
+epoch   1  loss 0.0109  val AUC-PR 0.090  AUC-ROC 0.725  CSI 0.123  F1 0.219  (1052.6s)
+epoch   2  loss 0.0104  val AUC-PR 0.064  AUC-ROC 0.719  CSI 0.106  F1 0.191  (1054.7s)
+epoch   3  loss 0.0103  val AUC-PR 0.090  AUC-ROC 0.714  CSI 0.122  F1 0.217  (1053.3s)
+epoch   4  loss 0.0100  val AUC-PR 0.093  AUC-ROC 0.699  CSI 0.126  F1 0.223  (1054.6s)
+epoch   5  loss 0.0097  val AUC-PR 0.091  AUC-ROC 0.681  CSI 0.129  F1 0.229  (1052.0s)
+epoch   6  loss 0.0093  val AUC-PR 0.094  AUC-ROC 0.701  CSI 0.131  F1 0.232  (1050.9s)
+epoch   7  loss 0.0091  val AUC-PR 0.094  AUC-ROC 0.695  CSI 0.131  F1 0.232  (1050.1s)
+epoch   8  loss 0.0087  val AUC-PR 0.093  AUC-ROC 0.685  CSI 0.131  F1 0.232  (1052.0s)
+TEST  AUC-PR 0.180  AUC-ROC 0.825  CSI 0.192  F1 0.322

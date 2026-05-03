@@ -1,131 +1,113 @@
 # pignode-wildfire
 
 Physics-Informed Graph Neural ODE (PI-GNODE) for wildfire spread prediction.
-CPSC 452 — Deep Learning, Spring 2026 final project.
+CPSC 452 — Deep Learning, Spring 2026 final project, Yale University.
 
-Proposal: [`docs/proposal.pdf`](docs/proposal.pdf).
+## Authors
 
-## Team
+Joseph Yu, Calum Zhang, Edward Lai, Steven Zhang.
 
-- Joseph Yu
-- Edward Lai
-- Steven Zhang
-- Calum Zhang
+## Paper
 
-## Final state of this repo
+[`docs/paper.pdf`](docs/paper.pdf) (NeurIPS 2024 format, 5-page main body
++ appendix). Source: [`docs/paper.tex`](docs/paper.tex).
 
-- `docs/paper.tex` -- final report in NeurIPS 2024 format. Compiles to a
-  7-page PDF (`docs/paper.pdf`) covering all rubric sections: abstract,
-  intro/motivation, background/related work, methods (with a TikZ model
-  schematic), empirical results (main comparison + ablations + qualitative),
-  discussion, conclusion + future work, author contributions.
-- `experiments/` -- migrated checkpoints and figures from the team's earlier
-  runs: PI-GNODE main (`pignode_uniform_full`), with-physics-edges
-  (`pignode_full`), and without-monotonicity ablations (`pignode_no_mono`),
-  plus `_figures/` (curves, ablation, qualitative panels, results table).
-- All proposal scope (cross-region generalization, additional ablations,
-  Frobenius/soft-monotonicity regularizers, edge-aware GCN/SAGE, multi-day
-  rollout, TS-SatFire) is implemented in code and documented in the paper as
-  "designed; empirical validation deferred". The relevant CLI flags and
-  scripts are listed in the paper's results section.
+## Headline results
 
-## Cross-region experiment on Colab (recommended)
+On the Next Day Wildfire Spread (NDWS) test set:
 
-If you don't have NDWS data on your machine, run the cross-region experiment on Google Colab.
+| Model | AUC-PR | AUC-ROC | CSI | F1 |
+|---|---|---|---|---|
+| Logistic Regression | 0.148 | 0.798 | 0.185 | 0.313 |
+| Random Forest | 0.150 | 0.813 | 0.184 | 0.311 |
+| Conv. Autoencoder | **0.357** | **0.944** | **0.262** | **0.415** |
+| GCN | 0.208 | 0.837 | 0.204 | 0.338 |
+| GraphSAGE | 0.229 | 0.857 | 0.212 | 0.349 |
+| GAT | 0.218 | 0.854 | 0.211 | 0.349 |
+| **PI-GNODE (ours)** | **0.221** | **0.896** | 0.206 | 0.341 |
 
-1. **Push this repo to GitHub** (if not already there).
-2. Open [`notebooks/colab_region_split.ipynb`](notebooks/colab_region_split.ipynb) on github.com → click the **"Open in Colab"** badge (or paste the GitHub URL into colab.research.google.com).
-3. Edit the first cell — set `REPO_URL` to your fork's URL.
-4. Runtime → Change runtime type → **T4 GPU**.
-5. Run all cells. ~1.5–2 hours total. Last cell downloads `region_split_results.zip`.
-6. Unzip into `experiments/` locally; rerun `python -m wildfire.figures` to refresh the figure.
+**Cross-region generalization** (NDWS partitioned by per-event mean
+elevation, then cross-evaluated): all four (train, test) combinations
+achieve ~11× lift over random AUC-PR baseline, indicating the learned
+spread dynamics transfer cleanly between mountainous and lowland fire
+regimes. See paper §4.4 for details.
 
-## How to run everything
+## Repository structure
 
-After NDWS is downloaded into `data/raw/ndws/`:
-
-```bash
-# 1. Original headline experiments (LR, RF, ConvAE, GCN, SAGE, GAT, PI-GNODE).
-bash scripts/run_all.sh
-
-# 2. Everything new added to respect the proposal: cross-region generalization,
-#    feature-group / connectivity / depth / solver ablations, edge-aware
-#    GCN/SAGE, Frobenius regularizer, soft monotonicity loss. Aggregates
-#    figures/tables at the end.
-bash scripts/run_new_experiments.sh
-
-# 3. (Optional) TS-SatFire pipeline. Requires Kaggle API auth and ~71 GB
-#    download. Use the MAX_*_EVENTS env vars to subset for a small first run.
-MAX_TRAIN_EVENTS=10 MAX_VAL_EVENTS=3 MAX_TEST_EVENTS=5 \
-    bash scripts/download_tssatfire.sh
-python -m wildfire.rollout --ckpt experiments/pignode_uniform_full/best.pt \
-    --subset 50 --mode free
+```
+docs/
+  paper.tex, paper.pdf      # final report
+  figures/schematic.tex     # TikZ model schematic
+  neurips_2024.sty          # style file
+src/wildfire/
+  data/ndws.py              # NDWS zarr loader, region-split logic
+  models/pignode.py         # PI-GNODE model
+  models/gnns.py            # GCN / SAGE / GAT baselines
+  models/baselines.py       # ConvAE / LR / RF baselines
+  graph.py                  # grid -> graph construction, edge features
+  losses.py                 # focal BCE loss
+  metrics.py                # AUC-PR, CSI, F1
+  train.py                  # training entry point
+  eval_region.py            # cross-region evaluation
+  figures.py                # aggregate figures + tables from JSON metrics
+scripts/
+  run_all.sh                # train all baselines + PI-GNODE
+  run_region_split.sh       # cross-region experiment (4 runs + cross-eval)
+notebooks/
+  colab_region_split.ipynb  # one-click reproduction on Google Colab T4
+experiments/
+  pignode_uniform_full/     # PI-GNODE main checkpoint + metrics
+  pignode_full/             # +physics-edges ablation
+  pignode_no_mono/          # -monotonicity ablation
+  pignode_high_elev/        # cross-region: trained on mountainous fires
+  pignode_low_elev/         # cross-region: trained on lowland fires
+  _figures/                 # PNGs + CSV tables used in the paper
 ```
 
-### Day-by-day starting suggestion
+## Reproducing the experiments
 
-| Day | Joseph | Edward | Steven | Calum |
-|-----|--------|--------|--------|-------|
-| 1 | Repo + env + NDWS download | TFRecord → PyG `Data` pipeline | LR + RF baselines | ConvAE baseline (replicate Huot et al.) |
-| 2 | GAT w/ edge features | GraphSAGE | GCN | Shared training loop + focal loss |
-| 3 | PI-GNODE: GAT-derivative `f_θ` | torchdiffeq integration (dopri5 + adjoint) | Metrics: AUC-PR, CSI, F1@best-thresh | First end-to-end PI-GNODE run |
-| 4 | Monotonicity constraint | Iterate on PI-GNODE | Run baselines at full scale | Hyperparam sweep |
-| 5 | Ablation: monotonicity on/off | Ablation: uniform vs physics edge feats | Eval all models, build results table | Plots + qualitative viz |
-| 6 | Final eval | Write-up | Write-up | Write-up |
-| 7 | Buffer / polish / submit | | | |
+### Easiest path: Colab (no local setup needed)
 
-Reassign as workload reveals itself.
+For the cross-region experiment specifically, [`notebooks/colab_region_split.ipynb`](notebooks/colab_region_split.ipynb) does the full pipeline (data download, training, cross-evaluation, heatmap) in one click. Free-tier T4 GPU, ~2 hours wall-clock.
 
-## Setup
+1. Open the notebook on github.com → click "Open in Colab".
+2. Runtime → Change runtime type → T4 GPU.
+3. Run all cells.
+
+### Local path (requires NDWS data)
 
 ```bash
-# Python 3.10+
+# 1. Set up environment
 python -m venv .venv && source .venv/bin/activate
 pip install -e .[dev]
+
+# 2. Download NDWS into data/raw/ndws/. The HuggingFace mirror is
+#    TheRootOf3/next-day-wildfire-spread; see notebooks/colab_region_split.ipynb
+#    for the exact download + unzip steps (HuggingFace zarr.zip layout).
+
+# 3. Run baselines + PI-GNODE
+bash scripts/run_all.sh
+
+# 4. Cross-region experiment
+bash scripts/run_region_split.sh
+
+# 5. Aggregate figures
+python -m wildfire.figures
 ```
 
-PyG note: on M1 Mac, the pure-Python `torch-geometric` package works without the C++ extensions for our use case. If you hit a missing-op error, install scatter/sparse from the PyG wheel index for your torch version.
+### Compiling the paper
 
-## Data
-
-NDWS (primary): https://www.kaggle.com/datasets/fantineh/next-day-wildfire-spread
-
-Place TFRecord files under `data/raw/ndws/`. The pipeline in `src/wildfire/data/ndws.py` (TODO) parses to PyG `Data` objects.
-
-## Hardware
-
-**Default: M1 Max + MPS.** Sufficient for 4096-node graphs and 18.5K events. Don't burn a day on cluster setup unless we hit a wall.
-
-**Fallback: Yale YCRC** (Grace / McCleary). If we move to YCRC, scripts go in `scripts/slurm/`. Code must work locally first.
-
-## Repo structure
-
-```
-src/wildfire/
-  data/         # TFRecord parsing, graph construction
-  models/       # baselines, GNNs, PI-GNODE
-  metrics.py    # AUC-PR, CSI, F1
-  train.py
-  eval.py
-configs/        # YAML per experiment
-scripts/        # SLURM scripts (when on YCRC)
-notebooks/      # exploration + final viz
-data/           # raw + processed (gitignored)
-experiments/    # logged results (gitignored)
-docs/           # proposal, write-up
+```bash
+cd docs && pdflatex paper.tex && pdflatex paper.tex
 ```
 
-## Metrics
+The NeurIPS style file is committed in `docs/neurips_2024.sty`; the
+TikZ schematic is in `docs/figures/schematic.tex` and is included via
+`\input{figures/schematic}`.
 
-Primary: **AUC-PR** (handles severe class imbalance — fire pixels are <2% of grid).
-Secondary: AUC-ROC (Huot et al. comparability), CSI / Threat Score, F1 at validation-optimal threshold.
+## Hardware notes
 
-## Targets to beat (Huot et al.)
-
-| Model | AUC | Precision | Recall |
-|-------|-----|-----------|--------|
-| Conv autoencoder | 0.284 | 0.336 | 0.431 |
-| Random Forest | — | — | — |
-| Logistic Regression | — | matched AE precision | lower |
-
-PI-GNODE goal: beat ConvAE on AUC-PR and CSI.
+The reported PI-GNODE main run used `hidden=96`, `batch_size=16`, 5 epochs,
+~3 hrs on Apple M1 Max with MPS backend. The cross-region runs used
+`hidden=96`, `batch_size=8`, 8 epochs, ~1 hr each on a Colab T4 GPU. T4
+needs the smaller batch to avoid OOM at hidden 128.

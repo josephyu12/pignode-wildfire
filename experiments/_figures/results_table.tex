@@ -1,0 +1,17 @@
+\begin{tabular}{lrrrr}
+\toprule
+ & AUC-PR & AUC-ROC & CSI & F1 \\
+model &  &  &  &  \\
+\midrule
+Logistic Regression & 0.148 & 0.798 & 0.185 & 0.313 \\
+Random Forest & 0.150 & 0.813 & 0.184 & 0.311 \\
+Conv. Autoencoder & 0.357 & 0.944 & 0.262 & 0.415 \\
+GCN & 0.208 & 0.837 & 0.204 & 0.338 \\
+GraphSAGE & 0.229 & 0.857 & 0.212 & 0.349 \\
+GAT (edge-attn) & 0.218 & 0.854 & 0.211 & 0.349 \\
+PI-GNODE (ours, full data) & 0.221 & 0.896 & 0.206 & 0.341 \\
+PI-GNODE (ours, 5K subset) & 0.220 & 0.889 & 0.206 & 0.342 \\
+  + physics edges & 0.175 & 0.842 & 0.199 & 0.332 \\
+  - monotonicity & 0.180 & 0.825 & 0.192 & 0.322 \\
+\bottomrule
+\end{tabular}

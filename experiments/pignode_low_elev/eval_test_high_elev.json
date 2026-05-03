@@ -1,0 +1,18 @@
+{
+  "ckpt": "experiments/pignode_low_elev/best.pt",
+  "trained_on": "low_elev",
+  "evaluated_on": "high_elev",
+  "split": "test",
+  "n_events": 921,
+  "metrics": {
+    "auc_pr": 0.21007902590706173,
+    "auc_roc": 0.8708237076332414,
+    "csi": 0.2034787627567752,
+    "f1": 0.33815098205916333,
+    "threshold": 0.5546934604644775,
+    "f1_default": 0.26900584795321636,
+    "n_pos": 75479,
+    "n_neg": 3614983,
+    "pos_frac": 0.020452452836528325
+  }
+}
