@@ -1,0 +1,78 @@
+\relax 
+\providecommand\hyper@newdestlabel[2]{}
+\providecommand\HyField@AuxAddToFields[1]{}
+\providecommand\HyField@AuxAddToCoFields[2]{}
+\citation{huot2022nextday}
+\citation{gallagher2024}
+\citation{chen2018neuralode}
+\@writefile{toc}{\contentsline {section}{\numberline {1}Introduction and Motivation}{1}{section.1}\protected@file@percent }
+\newlabel{sec:intro}{{1}{1}{Introduction and Motivation}{section.1}{}}
+\@writefile{toc}{\contentsline {paragraph}{Problem.}{1}{section*.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Why graphs and Neural ODEs.}{1}{section*.3}\protected@file@percent }
+\citation{huot2022nextday}
+\citation{gerard2023wildfire}
+\citation{tssatfire2025}
+\citation{kipf2017gcn}
+\citation{hamilton2017sage}
+\citation{velickovic2018gat}
+\citation{fey2019pyg}
+\citation{chen2018neuralode}
+\citation{higo2026}
+\@writefile{toc}{\contentsline {paragraph}{Contributions.}{2}{section*.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {2}Background and Related Work}{2}{section.2}\protected@file@percent }
+\newlabel{sec:related}{{2}{2}{Background and Related Work}{section.2}{}}
+\@writefile{toc}{\contentsline {paragraph}{Wildfire spread benchmarks.}{2}{section*.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Standard GNN architectures.}{2}{section*.6}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Neural ODEs and physics-informed dynamics.}{2}{section*.7}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Limitations of prior work.}{2}{section*.8}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {3}Methods}{2}{section.3}\protected@file@percent }
+\newlabel{sec:methods}{{3}{2}{Methods}{section.3}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.1}Graph Construction}{2}{subsection.3.1}\protected@file@percent }
+\citation{velickovic2018gat}
+\citation{chen2018neuralode}
+\citation{lin2017focal}
+\citation{huot2022nextday}
+\citation{kipf2017gcn}
+\citation{hamilton2017sage}
+\citation{velickovic2018gat}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.2}PI-GNODE Architecture}{3}{subsection.3.2}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {1}{\ignorespaces PI-GNODE architecture. The 12-channel input grid is encoded per cell into a hidden state $h(0)$. The temporal derivative $dh/dt = f_\theta (h, A, e)$ is parameterized by stacked edge-conditioned GAT layers; we integrate via RK4 over $[0, T]$. The decoder head maps $h(T)$ to per-cell logits, and the burn-irreversibility floor (eq.~\ref {eq:mono}) is applied at inference.}}{3}{figure.caption.9}\protected@file@percent }
+\providecommand*\caption@xref[2]{\@setref\relax\@undefined{#1}}
+\newlabel{fig:schematic}{{1}{3}{PI-GNODE architecture. The 12-channel input grid is encoded per cell into a hidden state $h(0)$. The temporal derivative $dh/dt = f_\theta (h, A, e)$ is parameterized by stacked edge-conditioned GAT layers; we integrate via RK4 over $[0, T]$. The decoder head maps $h(T)$ to per-cell logits, and the burn-irreversibility floor (eq.~\ref {eq:mono}) is applied at inference}{figure.caption.9}{}}
+\newlabel{eq:ode}{{1}{3}{PI-GNODE Architecture}{equation.1}{}}
+\newlabel{eq:att}{{2}{3}{PI-GNODE Architecture}{equation.2}{}}
+\newlabel{eq:mono}{{3}{3}{PI-GNODE Architecture}{equation.3}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.3}Training}{3}{subsection.3.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {4}Empirical Results}{4}{section.4}\protected@file@percent }
+\newlabel{sec:results}{{4}{4}{Empirical Results}{section.4}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.1}Main Comparison}{4}{subsection.4.1}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {1}{\ignorespaces Test-set metrics on Next Day Wildfire Spread. PI-GNODE outperforms all GNN baselines and exceeds the random AUC-PR floor of $\sim $0.006 (positive class is $<$1\%) by $\sim $37$\times $. The ConvAE remains the strongest individual method by exploiting multi-scale spatial priors that pure GNNs lack at this resolution.}}{4}{table.caption.10}\protected@file@percent }
+\newlabel{tab:main}{{1}{4}{Test-set metrics on Next Day Wildfire Spread. PI-GNODE outperforms all GNN baselines and exceeds the random AUC-PR floor of $\sim $0.006 (positive class is $<$1\%) by $\sim $37$\times $. The ConvAE remains the strongest individual method by exploiting multi-scale spatial priors that pure GNNs lack at this resolution}{table.caption.10}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {2}{\ignorespaces Validation AUC-PR by epoch. ConvAE saturates higher because its 1.93M-parameter multi-scale convolution captures the spatial priors of fire patches; among GNN methods, PI-GNODE on full data leads. PI-GNODE's strong epoch-1 performance compared to discrete GNN baselines (GAT/GCN) suggests the integrated ODE warm-starts well.}}{4}{figure.caption.11}\protected@file@percent }
+\newlabel{fig:curves}{{2}{4}{Validation AUC-PR by epoch. ConvAE saturates higher because its 1.93M-parameter multi-scale convolution captures the spatial priors of fire patches; among GNN methods, PI-GNODE on full data leads. PI-GNODE's strong epoch-1 performance compared to discrete GNN baselines (GAT/GCN) suggests the integrated ODE warm-starts well}{figure.caption.11}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.2}Ablations}{4}{subsection.4.2}\protected@file@percent }
+\newlabel{sec:ablation}{{4.2}{4}{Ablations}{subsection.4.2}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {3}{\ignorespaces Ablations on PI-GNODE. Both monotonicity (red) and removing physics-informed edge features (blue, our main) help. Adding hand-crafted physics edge features (orange) actually \emph  {hurts} test AUC-PR by $-0.046$.}}{5}{figure.caption.12}\protected@file@percent }
+\newlabel{fig:ablation}{{3}{5}{Ablations on PI-GNODE. Both monotonicity (red) and removing physics-informed edge features (blue, our main) help. Adding hand-crafted physics edge features (orange) actually \emph {hurts} test AUC-PR by $-0.046$}{figure.caption.12}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.3}Cross-Region Generalization Protocol (Designed)}{5}{subsection.4.3}\protected@file@percent }
+\newlabel{sec:region}{{4.3}{5}{Cross-Region Generalization Protocol (Designed)}{subsection.4.3}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.4}Qualitative}{5}{subsection.4.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {5}Discussion}{5}{section.5}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {4}{\ignorespaces PI-GNODE predictions on the four test events with the most fire pixels. Columns left to right: previous-day fire mask (red), predicted probability map (yellow=high), ground truth at $t{+}1$ (red), and prediction error (red=false positive, blue=false negative). The model correctly localizes spread to previously-burning regions plus a narrow expansion zone, but consistently under-predicts the magnitude of fast spread events.}}{6}{figure.caption.13}\protected@file@percent }
+\newlabel{fig:qual}{{4}{6}{PI-GNODE predictions on the four test events with the most fire pixels. Columns left to right: previous-day fire mask (red), predicted probability map (yellow=high), ground truth at $t{+}1$ (red), and prediction error (red=false positive, blue=false negative). The model correctly localizes spread to previously-burning regions plus a narrow expansion zone, but consistently under-predicts the magnitude of fast spread events}{figure.caption.13}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {6}Conclusion and Future Work}{6}{section.6}\protected@file@percent }
+\newlabel{sec:conclusion}{{6}{6}{Conclusion and Future Work}{section.6}{}}
+\bibstyle{plain}
+\bibcite{huot2022nextday}{{1}{}{{}}{{}}}
+\bibcite{gallagher2024}{{2}{}{{}}{{}}}
+\bibcite{kipf2017gcn}{{3}{}{{}}{{}}}
+\bibcite{hamilton2017sage}{{4}{}{{}}{{}}}
+\bibcite{velickovic2018gat}{{5}{}{{}}{{}}}
+\bibcite{chen2018neuralode}{{6}{}{{}}{{}}}
+\bibcite{fey2019pyg}{{7}{}{{}}{{}}}
+\bibcite{lin2017focal}{{8}{}{{}}{{}}}
+\bibcite{gerard2023wildfire}{{9}{}{{}}{{}}}
+\bibcite{tssatfire2025}{{10}{}{{}}{{}}}
+\bibcite{higo2026}{{11}{}{{}}{{}}}
+\providecommand\NAT@force@numbers{}\NAT@force@numbers
+\gdef \@abspage@last{7}

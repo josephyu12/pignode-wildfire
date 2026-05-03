@@ -23,27 +23,59 @@ from torch.utils.data import DataLoader, Subset
 
 from .data.ndws import NDWSDataset, get_norm
 from .graph import build_grid_edges
-from .losses import focal_bce_with_logits
+from .losses import (
+    focal_bce_with_logits,
+    frobenius_dynamics_penalty,
+    soft_monotonicity_penalty,
+)
 from .metrics import all_metrics
 from .models.baselines import ConvAE
-from .models.gnns import GridGAT, GridGCN, GridSAGE
+from .models.gnns import (
+    GridGAT,
+    GridGATEdge,
+    GridGCN,
+    GridGCNEdge,
+    GridSAGE,
+    GridSAGEEdge,
+)
 from .models.pignode import PIGNODE
 
 
 def make_model(name: str, edge_index, edge_dirs, norm_mean, norm_std, **kw):
     name = name.lower()
+    hid = kw.get("hidden", 64)
+    n_layers = kw.get("n_layers", 3)
     if name == "convae":
         return ConvAE(in_ch=12, base=kw.get("base", 32))
     if name == "gcn":
-        return GridGCN(edge_index, hid=kw.get("hidden", 64), n_layers=kw.get("n_layers", 3))
+        return GridGCN(edge_index, hid=hid, n_layers=n_layers)
     if name == "sage":
-        return GridSAGE(edge_index, hid=kw.get("hidden", 64), n_layers=kw.get("n_layers", 3))
+        return GridSAGE(edge_index, hid=hid, n_layers=n_layers)
     if name == "gat":
-        return GridGAT(edge_index, hid=kw.get("hidden", 64), n_layers=kw.get("n_layers", 3))
+        return GridGAT(edge_index, hid=hid, n_layers=n_layers)
+    if name == "gcn_edge":
+        return GridGCNEdge(
+            edge_index, edge_dirs, hid=hid, n_layers=n_layers,
+            uniform_edges=kw.get("uniform_edges", False),
+            norm_mean=norm_mean, norm_std=norm_std,
+        )
+    if name == "sage_edge":
+        return GridSAGEEdge(
+            edge_index, edge_dirs, hid=hid, n_layers=n_layers,
+            uniform_edges=kw.get("uniform_edges", False),
+            norm_mean=norm_mean, norm_std=norm_std,
+        )
+    if name == "gat_edge":
+        return GridGATEdge(
+            edge_index, edge_dirs, hid=hid, n_layers=n_layers,
+            heads=kw.get("heads", 4),
+            uniform_edges=kw.get("uniform_edges", False),
+            norm_mean=norm_mean, norm_std=norm_std,
+        )
     if name == "pignode":
         return PIGNODE(
             edge_index=edge_index, edge_dirs=edge_dirs,
-            hidden=kw.get("hidden", 64),
+            hidden=hid,
             heads=kw.get("heads", 4),
             ode_layers=kw.get("ode_layers", 2),
             t_end=kw.get("t_end", 1.0),
@@ -53,6 +85,7 @@ def make_model(name: str, edge_index, edge_dirs, norm_mean, norm_std, **kw):
             norm_mean=norm_mean, norm_std=norm_std,
             solver=kw.get("solver", "dopri5"),
             adjoint=kw.get("adjoint", True),
+            return_dyn_norms=kw.get("frobenius_weight", 0.0) > 0.0,
         )
     raise ValueError(f"unknown model: {name}")
 
@@ -92,9 +125,19 @@ def train(args):
     # Data — in_memory=True is ~800x faster than zarr-on-disk slicing
     log("loading data into memory...")
     t = time.time()
-    train_ds = NDWSDataset("train", augment=True, in_memory=args.in_memory)
-    val_ds = NDWSDataset("eval", augment=False, in_memory=args.in_memory)
-    test_ds = NDWSDataset("test", augment=False, in_memory=args.in_memory)
+    drop = args.drop_feature_group or None
+    if drop:
+        log(f"  dropping feature group: {drop!r}")
+    region = args.region if args.region != "all" else None
+    if region:
+        log(f"  region filter: {region!r}")
+    train_ds = NDWSDataset("train", augment=True, in_memory=args.in_memory,
+                           drop_feature_group=drop, region=region)
+    val_ds = NDWSDataset("eval", augment=False, in_memory=args.in_memory,
+                         drop_feature_group=drop, region=region)
+    test_ds = NDWSDataset("test", augment=False, in_memory=args.in_memory,
+                          drop_feature_group=drop, region=region)
+    log(f"  events: train={len(train_ds)} eval={len(val_ds)} test={len(test_ds)}")
     log(f"  done in {time.time()-t:.1f}s")
     if args.subset_train:
         train_ds = Subset(train_ds, list(range(min(args.subset_train, len(train_ds)))))
@@ -116,6 +159,7 @@ def train(args):
         t_end=args.t_end, n_eval_steps=args.n_eval_steps,
         monotone=args.monotone, uniform_edges=args.uniform_edges,
         adjoint=args.adjoint, solver=args.solver, base=args.hidden // 2,
+        frobenius_weight=args.frobenius_weight,
     )
     model = make_model(args.model, edge_index, edge_dirs, norm_mean, norm_std, **kw)
     model = model.to(device)
@@ -131,15 +175,44 @@ def train(args):
     with open(curves_path, "w", newline="") as f:
         csv.writer(f).writerow(["epoch", "train_loss", "val_auc_pr", "val_auc_roc", "val_csi", "val_f1", "epoch_sec"])
 
+    is_pignode = args.model.lower() == "pignode"
+    use_frob = is_pignode and args.frobenius_weight > 0.0
+    use_soft_mono = args.soft_mono_weight > 0.0
+
     for epoch in range(1, args.epochs + 1):
         model.train()
         losses = []
+        loss_breakdown = {"focal": [], "soft_mono": [], "frob": []}
         t0 = time.time()
         for i, (x, y) in enumerate(train_loader):
             x = x.to(device, non_blocking=True)
             y = y.to(device, non_blocking=True)
-            logits = model(x)
-            loss = focal_bce_with_logits(logits, y, alpha=args.focal_alpha, gamma=args.focal_gamma)
+            out = model(x)
+            if isinstance(out, tuple):
+                logits, dyn_norms = out
+            else:
+                logits, dyn_norms = out, None
+
+            loss_focal = focal_bce_with_logits(
+                logits, y, alpha=args.focal_alpha, gamma=args.focal_gamma
+            )
+            loss = loss_focal
+            loss_breakdown["focal"].append(loss_focal.item())
+
+            if use_soft_mono:
+                # Eq. (4) in differentiable form: penalize σ(z_i) < 1 on burning cells.
+                # Channel 0 of x is normalized PrevFireMask; normalization preserves
+                # binary {0,1} since that channel is excluded from standardization
+                # (see ndws.compute_norm_stats).
+                lm = soft_monotonicity_penalty(logits, x[:, 0])
+                loss = loss + args.soft_mono_weight * lm
+                loss_breakdown["soft_mono"].append(lm.item())
+
+            if use_frob and dyn_norms is not None and len(dyn_norms) > 0:
+                lf = frobenius_dynamics_penalty(dyn_norms)
+                loss = loss + args.frobenius_weight * lf
+                loss_breakdown["frob"].append(lf.item())
+
             opt.zero_grad(set_to_none=True)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -150,7 +223,12 @@ def train(args):
         sched.step()
         epoch_time = time.time() - t0
         m = evaluate(model, val_loader, device, max_batches=args.eval_batches)
-        log(f"epoch {epoch:3d}  loss {np.mean(losses):.4f}  "
+        extras = ""
+        if loss_breakdown["soft_mono"]:
+            extras += f" mono {np.mean(loss_breakdown['soft_mono']):.4f}"
+        if loss_breakdown["frob"]:
+            extras += f" frob {np.mean(loss_breakdown['frob']):.4f}"
+        log(f"epoch {epoch:3d}  loss {np.mean(losses):.4f}{extras}  "
             f"val AUC-PR {m['auc_pr']:.3f}  AUC-ROC {m['auc_roc']:.3f}  "
             f"CSI {m['csi']:.3f}  F1 {m['f1']:.3f}  ({epoch_time:.1f}s)")
         history.append({"epoch": epoch, "loss": float(np.mean(losses)), **m, "epoch_sec": epoch_time})
@@ -173,7 +251,11 @@ def train(args):
 
 def parse():
     p = argparse.ArgumentParser()
-    p.add_argument("--model", required=True, choices=["convae", "gcn", "sage", "gat", "pignode"])
+    p.add_argument("--model", required=True, choices=[
+        "convae", "gcn", "sage", "gat",
+        "gcn_edge", "sage_edge", "gat_edge",      # edge-aware variants (proposal §4.2)
+        "pignode",
+    ])
     p.add_argument("--exp", default=None)
     p.add_argument("--device", default="mps" if torch.backends.mps.is_available() else "cpu")
     p.add_argument("--epochs", type=int, default=8)
@@ -197,6 +279,17 @@ def parse():
     p.add_argument("--solver", default="rk4", help="rk4 (default, MPS-safe) or dopri5 (CPU only)")
     p.add_argument("--focal-alpha", type=float, default=0.75)
     p.add_argument("--focal-gamma", type=float, default=2.0)
+    p.add_argument("--drop-feature-group", default=None,
+                   choices=["topo", "weather", "fuel", "human"],
+                   help="proposal §6.3 #2 ablation: zero out a feature group")
+    p.add_argument("--region", default="all",
+                   choices=["all", "high_elev", "low_elev"],
+                   help="elevation-based domain split for cross-region "
+                        "generalization tests; 'all' uses every NDWS event")
+    p.add_argument("--frobenius-weight", type=float, default=0.0,
+                   help="proposal §5 challenge #4: λ on ||dh/dt||^2 along the trajectory")
+    p.add_argument("--soft-mono-weight", type=float, default=0.0,
+                   help="weight on differentiable form of eq. (4) burn irreversibility")
     p.add_argument("--max-steps", type=int, default=None, help="cap iterations per epoch (debug)")
     p.add_argument("--eval-batches", type=int, default=None, help="cap eval batches (debug)")
     p.add_argument("--subset-train", type=int, default=None, help="train on first N events only")
@@ -204,7 +297,28 @@ def parse():
     p.add_argument("--no-in-memory", dest="in_memory", action="store_false")
     args = p.parse_args()
     if args.exp is None:
-        args.exp = args.model + ("_no_mono" if not args.monotone else "") + ("_uniform" if args.uniform_edges else "")
+        tags = [args.model]
+        if not args.monotone:
+            tags.append("no_mono")
+        if args.uniform_edges:
+            tags.append("uniform")
+        if args.drop_feature_group:
+            tags.append(f"drop_{args.drop_feature_group}")
+        if args.connectivity != 8:
+            tags.append(f"c{args.connectivity}")
+        if args.region != "all":
+            tags.append(args.region)
+        if args.solver != "rk4":
+            tags.append(args.solver)
+        if args.frobenius_weight > 0:
+            tags.append(f"frob{args.frobenius_weight:g}")
+        if args.soft_mono_weight > 0:
+            tags.append(f"sm{args.soft_mono_weight:g}")
+        if args.n_layers != 3 and "pignode" not in args.model:
+            tags.append(f"L{args.n_layers}")
+        if "pignode" in args.model and args.ode_layers != 2:
+            tags.append(f"ol{args.ode_layers}")
+        args.exp = "_".join(tags)
     return args
 
 

@@ -1,0 +1,60 @@
+% PI-GNODE model schematic. Included from paper.tex via \input.
+\begin{tikzpicture}[
+  node distance=10mm and 11mm,
+  every node/.style={font=\footnotesize},
+  box/.style={draw, rounded corners=2pt, minimum height=8mm, minimum width=18mm,
+              align=center, fill=blue!5},
+  ode/.style={draw, rounded corners=2pt, minimum height=10mm, minimum width=28mm,
+              align=center, fill=orange!10, thick},
+  mono/.style={draw, rounded corners=2pt, minimum height=8mm, minimum width=20mm,
+               align=center, fill=red!10, thick, dashed},
+  arrow/.style={-{Latex[length=2mm]}, thick},
+]
+
+% Input
+\node[box] (input) {Input grid \\ $(B, 12, 64{\times}64)$};
+
+% Encoder
+\node[box, right=of input] (enc) {Encode \\ MLP};
+
+% h(0)
+\node[box, right=of enc] (h0) {$h(0)$ \\ $(N, d)$};
+
+% ODE block
+\node[ode, right=12mm of h0] (ode)
+  {ODE Solver (RK4) \\
+   $\dfrac{dh}{dt} = f_\theta(h, A, e)$ \\
+   stacked GAT + LayerNorm};
+
+% h(T)
+\node[box, right=of ode] (hT) {$h(T)$};
+
+% Decoder head
+\node[box, right=of hT] (head) {Decode \\ MLP $\to$ logits};
+
+% Monotonicity floor
+\node[mono, below=12mm of head] (mono)
+  {Burn-irreversibility floor \\
+   $\hat p_i \!=\! \sigma\!\big(\max(z_i, c\!\cdot\!\mathbf{1}[\mathrm{PrevFire}_i])\big)$ \\
+   {\scriptsize (inference only)}};
+
+% Output
+\node[box, below=12mm of mono] (output) {Predicted \\ fire prob $(B, 64{\times}64)$};
+
+% Arrows
+\draw[arrow] (input) -- (enc);
+\draw[arrow] (enc) -- (h0);
+\draw[arrow] (h0) -- (ode);
+\draw[arrow] (ode) -- (hT);
+\draw[arrow] (hT) -- (head);
+\draw[arrow] (head) -- (mono);
+\draw[arrow] (mono) -- (output);
+
+% Edge feature side path
+\node[draw, rounded corners=2pt, fill=green!8, below=8mm of ode,
+      minimum width=28mm, align=center]
+  (edges) {Edge features $e_{ij}$ \\
+           {\scriptsize wind align., slope, NDVI cont.}};
+\draw[arrow, dashed] (edges) -- (ode);
+
+\end{tikzpicture}

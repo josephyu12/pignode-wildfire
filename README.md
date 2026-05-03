@@ -12,14 +12,55 @@ Proposal: [`docs/proposal.pdf`](docs/proposal.pdf).
 - Steven Zhang
 - Calum Zhang
 
-## Plan — 7-day descope
+## Final state of this repo
 
-The proposal is paper-scope (PI-GNODE + 6 baselines + 6 ablations + 2 datasets + multi-day rollout). With ~7 days we cut to a shippable core:
+- `docs/paper.tex` -- final report in NeurIPS 2024 format. Compiles to a
+  7-page PDF (`docs/paper.pdf`) covering all rubric sections: abstract,
+  intro/motivation, background/related work, methods (with a TikZ model
+  schematic), empirical results (main comparison + ablations + qualitative),
+  discussion, conclusion + future work, author contributions.
+- `experiments/` -- migrated checkpoints and figures from the team's earlier
+  runs: PI-GNODE main (`pignode_uniform_full`), with-physics-edges
+  (`pignode_full`), and without-monotonicity ablations (`pignode_no_mono`),
+  plus `_figures/` (curves, ablation, qualitative panels, results table).
+- All proposal scope (cross-region generalization, additional ablations,
+  Frobenius/soft-monotonicity regularizers, edge-aware GCN/SAGE, multi-day
+  rollout, TS-SatFire) is implemented in code and documented in the paper as
+  "designed; empirical validation deferred". The relevant CLI flags and
+  scripts are listed in the paper's results section.
 
-**Cut:** TS-SatFire dataset, multi-day rollout, 4 of 6 ablations.
-**Keep:** Next Day Wildfire Spread (NDWS), all 6 baselines (LR / RF / ConvAE / GCN / SAGE / GAT), PI-GNODE with monotonicity, 2 ablations (monotonicity prior, edge encoding).
+## Cross-region experiment on Colab (recommended)
 
-If we ship the core early, add scope back in this order: more ablations → multi-day rollout → TS-SatFire.
+If you don't have NDWS data on your machine, run the cross-region experiment on Google Colab.
+
+1. **Push this repo to GitHub** (if not already there).
+2. Open [`notebooks/colab_region_split.ipynb`](notebooks/colab_region_split.ipynb) on github.com → click the **"Open in Colab"** badge (or paste the GitHub URL into colab.research.google.com).
+3. Edit the first cell — set `REPO_URL` to your fork's URL.
+4. Runtime → Change runtime type → **T4 GPU**.
+5. Run all cells. ~1.5–2 hours total. Last cell downloads `region_split_results.zip`.
+6. Unzip into `experiments/` locally; rerun `python -m wildfire.figures` to refresh the figure.
+
+## How to run everything
+
+After NDWS is downloaded into `data/raw/ndws/`:
+
+```bash
+# 1. Original headline experiments (LR, RF, ConvAE, GCN, SAGE, GAT, PI-GNODE).
+bash scripts/run_all.sh
+
+# 2. Everything new added to respect the proposal: cross-region generalization,
+#    feature-group / connectivity / depth / solver ablations, edge-aware
+#    GCN/SAGE, Frobenius regularizer, soft monotonicity loss. Aggregates
+#    figures/tables at the end.
+bash scripts/run_new_experiments.sh
+
+# 3. (Optional) TS-SatFire pipeline. Requires Kaggle API auth and ~71 GB
+#    download. Use the MAX_*_EVENTS env vars to subset for a small first run.
+MAX_TRAIN_EVENTS=10 MAX_VAL_EVENTS=3 MAX_TEST_EVENTS=5 \
+    bash scripts/download_tssatfire.sh
+python -m wildfire.rollout --ckpt experiments/pignode_uniform_full/best.pt \
+    --subset 50 --mode free
+```
 
 ### Day-by-day starting suggestion
 

@@ -26,14 +26,19 @@ OUT = EXP_ROOT / "_figures"
 
 def _load_runs() -> list[tuple[str, dict]]:
     runs = []
+    if not EXP_ROOT.exists():
+        return runs
     for p in sorted(EXP_ROOT.iterdir()):
         if not p.is_dir() or p.name.startswith("_"):
             continue
         m = p / "metrics.json"
         if not m.exists():
             continue
-        with open(m) as f:
-            runs.append((p.name, json.load(f)))
+        try:
+            with open(m) as f:
+                runs.append((p.name, json.load(f)))
+        except (json.JSONDecodeError, OSError) as e:
+            print(f"  skipping corrupt {m}: {e}")
     return runs
 
 
@@ -136,7 +141,10 @@ def plot_ablation():
     plt.close(fig)
 
 
-def plot_qualitative(model_dirname: str = "pignode", n_examples: int = 4, device: str = "mps"):
+def plot_qualitative(model_dirname: str = "pignode", n_examples: int = 4,
+                     device: str | None = None):
+    if device is None:
+        device = "mps" if torch.backends.mps.is_available() else "cpu"
     """For a trained PI-GNODE checkpoint, plot input fire / pred / ground truth side-by-side
     for the highest-fire-content events in the test split."""
     from .data.ndws import NDWSDataset
@@ -198,17 +206,94 @@ def plot_qualitative(model_dirname: str = "pignode", n_examples: int = 4, device
     plt.close(fig)
 
 
+def plot_region_split():
+    """2x2 cross-region generalization matrix (replaces TS-SatFire claim).
+
+    Reads experiments/pignode_{high,low}_elev/eval_test_{high,low}_elev.json and
+    builds a heatmap: rows = trained_on region, cols = evaluated_on region.
+    Diagonal = in-domain; off-diagonal = generalization gap.
+    """
+    cells = {}
+    for trained in ("high_elev", "low_elev"):
+        for evald in ("high_elev", "low_elev"):
+            path = EXP_ROOT / f"pignode_{trained}" / f"eval_test_{evald}.json"
+            if not path.exists():
+                print(f"  skip region figure: missing {path}")
+                return
+            with open(path) as f:
+                cells[(trained, evald)] = json.load(f)["metrics"]
+
+    metrics = ["auc_pr", "csi"]
+    labels = {"high_elev": "High elevation\n(mountainous)",
+              "low_elev":  "Low elevation\n(lowland)"}
+    fig, axes = plt.subplots(1, len(metrics), figsize=(4 * len(metrics) + 1, 4))
+    if len(metrics) == 1:
+        axes = [axes]
+    for ax, metric in zip(axes, metrics):
+        mat = np.array([
+            [cells[("high_elev", "high_elev")][metric],
+             cells[("high_elev", "low_elev")][metric]],
+            [cells[("low_elev",  "high_elev")][metric],
+             cells[("low_elev",  "low_elev")][metric]],
+        ])
+        im = ax.imshow(mat, cmap="viridis", vmin=0)
+        for i in range(2):
+            for j in range(2):
+                ax.text(j, i, f"{mat[i,j]:.3f}",
+                        ha="center", va="center",
+                        color="white" if mat[i,j] < mat.max() * 0.6 else "black",
+                        fontsize=12)
+        ax.set_xticks([0, 1]); ax.set_yticks([0, 1])
+        ax.set_xticklabels([labels["high_elev"], labels["low_elev"]], fontsize=8)
+        ax.set_yticklabels([labels["high_elev"], labels["low_elev"]], fontsize=8)
+        ax.set_xlabel("Evaluated on")
+        ax.set_ylabel("Trained on")
+        ax.set_title(f"Test {metric.upper().replace('_', '-')}")
+        plt.colorbar(im, ax=ax, fraction=0.046)
+    fig.suptitle("Cross-region generalization (NDWS elevation split)")
+    fig.tight_layout()
+    fig.savefig(OUT / "region_split.png", dpi=140)
+    plt.close(fig)
+
+
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
+    # Each plotter is wrapped: a single corrupt experiments/<name>/metrics.json
+    # should not block the others. We always finish writing the results table
+    # so even a one-experiment run produces a usable artifact.
     print("Results table:")
-    make_results_table()
+    try:
+        make_results_table()
+    except Exception as e:
+        print(f"  results table failed: {e}")
     print("\nTraining curves...")
-    plot_curves()
+    try:
+        plot_curves()
+    except Exception as e:
+        print(f"  curves failed: {e}")
     print("Ablation chart...")
-    plot_ablation()
+    try:
+        plot_ablation()
+    except Exception as e:
+        print(f"  ablation chart failed: {e}")
+    print("Region-split heatmap...")
+    try:
+        plot_region_split()
+    except Exception as e:
+        print(f"  region figure failed: {e}")
     print("Qualitative panels...")
-    # Use the strongest checkpoint for the qualitative figure.
-    plot_qualitative("pignode_uniform_full")
+    # Use the strongest available pignode checkpoint for the qualitative figure.
+    candidates = [
+        "pignode_uniform_full", "pignode", "pignode_high_elev", "pignode_low_elev",
+    ]
+    chosen = next((c for c in candidates if (EXP_ROOT / c / "best.pt").exists()), None)
+    if chosen is None:
+        print("  no pignode checkpoint found, skipping qualitative")
+    else:
+        try:
+            plot_qualitative(chosen)
+        except Exception as e:
+            print(f"  qualitative figure failed: {e}")
     print(f"\nAll figures written to {OUT}/")
 
 
