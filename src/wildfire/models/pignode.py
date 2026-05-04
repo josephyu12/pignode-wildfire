@@ -1,15 +1,6 @@
-"""Physics-Informed Graph Neural ODE (PI-GNODE) for wildfire spread.
+"""PI-GNODE: physics-informed graph neural ODE for wildfire spread.
 
-Architecture
-------------
-1. Encode 12 input features per node -> hidden state h(0).
-2. ODE: dh/dt = f_θ(h, A, e) where f_θ is a GAT layer with edge-conditioned
-   attention (edge features = wind-edge alignment, slope, NDVI continuity).
-3. Integrate h(T) using torchdiffeq adjoint (default: dopri5).
-4. Decode h(T) -> per-node fire logit.
-5. Monotonicity: predicted prob is forced >= initial fire prob (burn irreversibility).
-
-Following equations (1)-(4) in the project proposal.
+encode -> integrate dh/dt = GAT_theta(h, edges) -> decode -> monotonicity floor.
 """
 from __future__ import annotations
 
@@ -27,19 +18,11 @@ from ..graph import (
 
 
 class GATODEFunc(nn.Module):
-    """Time-derivative dh/dt parameterized by stacked edge-conditioned GAT layers.
+    """dh/dt as a stack of edge-conditioned GAT layers.
 
-    PyG's GATConv with edge_dim>0 implements eq. (3) in the proposal:
-        α_ij = softmax(LeakyReLU(a^T [Wh_i || Wh_j || W_e e_ij]))
-
-    Stacking >1 GAT layer inside f gives the ODE function genuine multi-hop
-    message-passing depth per integration step, which the integration-only
-    formulation lacks. Each step thus performs ode_layers hops; integration
-    over T steps performs T*ode_layers hops total.
-
-    Optionally records ‖dh/dt‖_F^2 / N at every NFE call for the Frobenius
-    dynamics regularizer (proposal §5 #4). Set `record_norm=True` before the
-    forward solve and read `dyn_norms` afterwards.
+    Each call does `ode_layers` hops of message passing, so a T-step solver
+    gets T*ode_layers hops total. Set record_norm=True before the solve to
+    capture per-step ||dh/dt||^2 for the Frobenius regularizer.
     """
 
     def __init__(self, hidden: int = 64, edge_dim: int = 3, heads: int = 4,
@@ -52,8 +35,7 @@ class GATODEFunc(nn.Module):
         ])
         self.norms = nn.ModuleList([nn.LayerNorm(hidden) for _ in range(ode_layers)])
         self.act = nn.SiLU()
-        # Scale-down the LAST GAT's projection so dh/dt is small at init -- a
-        # standard Neural ODE stability trick ("identity-init" the residual flow).
+        # identity-ish init: shrink the last GAT so dh/dt starts near zero
         with torch.no_grad():
             self.gats[-1].lin.weight.mul_(0.1)
         self._edge_index: torch.Tensor | None = None
@@ -73,12 +55,10 @@ class GATODEFunc(nn.Module):
     def forward(self, t: torch.Tensor, h: torch.Tensor) -> torch.Tensor:
         self.nfe += 1
         z = h
-        for i, (gat, norm) in enumerate(zip(self.gats, self.norms)):
-            msg = gat(z, self._edge_index, edge_attr=self._edge_attr)
-            z = self.act(norm(msg))
+        for gat, norm in zip(self.gats, self.norms):
+            z = self.act(norm(gat(z, self._edge_index, edge_attr=self._edge_attr)))
         if self.record_norm:
-            # Per-element mean of squared norm; cheaper than full Frobenius and
-            # invariant to graph size, which keeps the regularizer scale stable.
+            # mean-squared per element; size-invariant proxy for ||dh/dt||_F^2
             self.dyn_norms.append(z.pow(2).mean())
         return z
 
@@ -140,15 +120,11 @@ class PIGNODE(nn.Module):
         self.n_eval_steps = n_eval_steps
 
     def _prepare_context(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Encode nodes, compute edge features, install batched edge_index.
-
-        Returns (h0, ei_batched, edge_attr_flat). Centralizing this makes the
-        single-day forward and the multi-day rollout share identical setup.
-        """
+        # encode + batched edges + edge features. Shared by single-day and rollout.
         B = x.size(0)
         E = self.edge_index.size(1)
-        nodes = grid_to_nodes(x)                                 # (B, N, F)
-        h0 = self.encode(nodes).reshape(B * N_NODES, -1)         # (B*N, hid)
+        nodes = grid_to_nodes(x)                              # (B, N, F)
+        h0 = self.encode(nodes).reshape(B * N_NODES, -1)
         edge_attr = compute_edge_features(
             nodes, self.edge_index, self.edge_dirs,
             norm_mean=self.norm_mean, norm_std=self.norm_std,
@@ -158,7 +134,6 @@ class PIGNODE(nn.Module):
         return h0, ei, edge_attr
 
     def _integrate(self, h0: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
-        """Run the ODE solver. `f`'s context (edge_index, edge_attr) must be set first."""
         if self.adjoint:
             return odeint_adjoint(
                 self.f, h0, t, method=self.solver,
@@ -168,13 +143,10 @@ class PIGNODE(nn.Module):
         return odeint(self.f, h0, t, method=self.solver, rtol=self.rtol, atol=self.atol)
 
     def _apply_monotone(self, logits: torch.Tensor, init_fire: torch.Tensor) -> torch.Tensor:
-        """Eq. (4) hard floor: σ(logits_i) ≥ 1[init_fire_i = 1]. Inference only.
-
-        Applying this during training would kill gradients on burning cells
-        (which hold ~99% of the label-1 mass), starving the model of signal.
-        We instead use `losses.soft_monotonicity_penalty` during training.
-        """
-        big = torch.full_like(logits, 6.0)   # σ(6) ≈ 0.998
+        # Hard floor: cells already burning -> p ~ 1. Inference only;
+        # at train time this would zero-out gradient on the densest label-1
+        # cells, so we use the soft penalty in losses.py instead.
+        big = torch.full_like(logits, 6.0)   # sigmoid(6) ~ 0.998
         return torch.where(init_fire > 0.5, torch.maximum(logits, big), logits)
 
     def forward(self, x: torch.Tensor):
@@ -199,55 +171,38 @@ class PIGNODE(nn.Module):
         n_days: int,
         teacher_fire_masks: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """Multi-day forecast (proposal §4.4).
+        """Multi-day forecast.
 
-        Integrates the ODE over [0, n_days] in unit-day chunks, decoding a fire
-        probability map at each integer day. The continuous formulation is the
-        whole point: a single longer integration has no autoregressive error
-        accumulation, but we still snapshot per-day predictions for evaluation.
+        Integrates one unit-day step at a time, decoding fire prob at each
+        integer day. If teacher_fire_masks is given, we substitute the GT
+        fire mask back into channel 0 at each boundary; otherwise we feed
+        back our own thresholded prediction.
 
-        Args:
-            x:                   (B, 12, H, W) initial input features at day 0.
-            n_days:              number of days to forecast (>= 1).
-            teacher_fire_masks:  optional (B, n_days, H, W) ground-truth fire
-                masks at day boundaries. If provided, we re-encode at each
-                boundary with the true mask substituted into channel 0
-                (teacher forcing, proposal §4.4 fallback). Otherwise pure
-                continuous integration with the inference monotonicity floor
-                applied at each day boundary.
-
-        Returns:
-            logits at each day, shape (B, n_days, H, W). Monotonicity floor is
-            applied per-day relative to the running burning mask -- once a cell
-            is predicted burning at day d, it stays burning at d' > d.
+        Returns logits of shape (B, n_days, H, W).
         """
         assert n_days >= 1
         B = x.size(0)
         device = x.device
         outs: list[torch.Tensor] = []
 
-        running_fire = x[:, 0].clone()                  # (B, H, W) burning indicator at day d
+        running_fire = x[:, 0].clone()
         cur_x = x
 
         for d in range(1, n_days + 1):
             h0, ei, edge_attr = self._prepare_context(cur_x)
             self.f.set_context(ei, edge_attr, record_norm=False)
             t = torch.tensor([0.0, 1.0], device=device, dtype=h0.dtype)
-            h_traj = self._integrate(h0, t)
-            h_T = h_traj[-1]
+            h_T = self._integrate(h0, t)[-1]
             logits = self.head(h_T).view(B, 64, 64)
 
             if self.monotone:
-                # Per-day eq. (4): a cell that was ever burning stays burning.
+                # once burning, stays burning
                 logits = self._apply_monotone(logits, running_fire)
 
             outs.append(logits)
             pred_fire = (torch.sigmoid(logits) > 0.5).float()
 
             if d < n_days:
-                # Re-base the next day. Teacher forcing replaces channel 0 with
-                # the ground-truth fire mask if supplied; otherwise we feed back
-                # our own thresholded prediction.
                 if teacher_fire_masks is not None:
                     next_fire = teacher_fire_masks[:, d - 1].to(device).float()
                 else:
@@ -256,4 +211,4 @@ class PIGNODE(nn.Module):
                 cur_x[:, 0] = next_fire
                 running_fire = torch.maximum(running_fire, next_fire)
 
-        return torch.stack(outs, dim=1)                  # (B, n_days, H, W)
+        return torch.stack(outs, dim=1)

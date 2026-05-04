@@ -1,11 +1,7 @@
-"""Next Day Wildfire Spread loader.
+"""NDWS (Huot et al. 2022) loader.
 
-Source: HuggingFace mirror TheRootOf3/next-day-wildfire-spread (zarr-zipped Huot et al. 2022).
-Splits live at data/raw/ndws/{train,eval,test}.zarr after unzipping.
-
-Each event is 64x64 with 12 input features and a FireMask label at t+1.
-Feature ordering follows Huot et al.:
-    [PrevFireMask, elevation, th, vs, tmmn, tmmx, sph, pr, pdsi, NDVI, erc, population]
+Reads the HF mirror's zarr files at data/raw/ndws/{train,eval,test}.zarr.
+Each event: 64x64, 12 input features + a FireMask label at t+1.
 """
 from __future__ import annotations
 
@@ -17,34 +13,29 @@ import xarray as xr
 from torch.utils.data import Dataset
 
 FEATURE_ORDER = [
-    "PrevFireMask",   # fire state at t
-    "elevation",      # topography
+    "PrevFireMask",   # fire at t (binary)
+    "elevation",
     "th",             # wind direction (deg)
     "vs",             # wind speed
-    "tmmn",           # min temp
-    "tmmx",           # max temp
+    "tmmn", "tmmx",   # min/max temp
     "sph",            # specific humidity
     "pr",             # precipitation
     "pdsi",           # drought index
-    "NDVI",           # vegetation
+    "NDVI",
     "erc",            # energy release component
-    "population",     # population density
+    "population",
 ]
 TARGET = "FireMask"
 
-# Proposal §2.1 feature groups, used by the feature-group drop ablation
-# (proposal §6.3 #2). Dropping "fire" is *not* offered: the model can't
-# predict next-day fire without seeing today's fire mask, so dropping it
-# would be measuring noise rather than feature contribution.
+# Feature groups for the "drop a group" ablation. We don't offer dropping
+# fire itself — without today's fire mask there's nothing to predict from.
 FEATURE_GROUPS: dict[str, list[int]] = {
-    "topo":    [1],            # elevation
-    "weather": [2, 3, 4, 5, 6, 7],  # th, vs, tmmn, tmmx, sph, pr
-    "fuel":    [8, 9, 10],     # pdsi, NDVI, erc
-    "human":   [11],           # population
+    "topo":    [1],
+    "weather": [2, 3, 4, 5, 6, 7],
+    "fuel":    [8, 9, 10],
+    "human":   [11],
 }
 
-# Per-feature normalization stats (mean, std) computed once on train split via compute_norm_stats().
-# Updated lazily on first call; cached at data/processed/norm_stats.npz.
 _NORM_CACHE: dict | None = None
 
 
@@ -53,7 +44,7 @@ def _zarr_path(split: str, root: str | Path = "data/raw/ndws") -> Path:
 
 
 def compute_norm_stats(root: str | Path = "data/raw/ndws", cache_path: str | Path | None = None) -> dict:
-    """Streaming mean/std over the train split. Saves to processed/ for reuse."""
+    """Streaming mean/std on the train split, cached to processed/."""
     cache_path = Path(cache_path or "data/processed/norm_stats.npz")
     if cache_path.exists():
         d = np.load(cache_path)
@@ -67,8 +58,7 @@ def compute_norm_stats(root: str | Path = "data/raw/ndws", cache_path: str | Pat
     chunk = 512
     for i in range(0, n, chunk):
         sl = slice(i, min(i + chunk, n))
-        block = np.stack([ds[v].isel(time=sl).values for v in FEATURE_ORDER], axis=1)  # (B,12,64,64)
-        # PrevFireMask is binary; we still standardize the rest. Mask out NaNs.
+        block = np.stack([ds[v].isel(time=sl).values for v in FEATURE_ORDER], axis=1)
         block = np.nan_to_num(block, nan=0.0)
         sums += block.sum(axis=(0, 2, 3))
         sumsq += (block.astype(np.float64) ** 2).sum(axis=(0, 2, 3))
@@ -76,7 +66,7 @@ def compute_norm_stats(root: str | Path = "data/raw/ndws", cache_path: str | Pat
     mean = sums / count
     var = sumsq / count - mean ** 2
     std = np.sqrt(np.clip(var, 1e-8, None))
-    # Don't normalize binary fire mask
+    # leave the binary fire mask alone
     mean[0] = 0.0
     std[0] = 1.0
     cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -91,20 +81,11 @@ def get_norm() -> dict:
     return _NORM_CACHE
 
 
-# ---------------------------------------------------------------------------
-# Geographic / topographic domain-shift splits.
-#
-# NDWS does not ship lat/lon per event, so we use *elevation* (feature index 1)
-# as a domain-shift proxy: events with above-median mean elevation are roughly
-# the western/mountainous fires (steep terrain, slope-dominated spread); below-
-# median events are roughly central/eastern lowland fires (flat terrain, wind-
-# dominated spread). The split threshold is fixed on the *training* split's
-# median to avoid test-set leakage; the same threshold is then applied to the
-# eval and test splits, so an event keeps the same regional label across all
-# uses.
-# ---------------------------------------------------------------------------
+# NDWS doesn't ship lat/lon, so we use mean elevation as a stand-in for the
+# western-mountains vs central-lowlands split. Threshold is the train median,
+# applied to all splits to avoid leakage.
 
-REGION_FEATURE_IDX = 1   # "elevation"
+REGION_FEATURE_IDX = 1   # elevation
 REGION_NAMES = ("high_elev", "low_elev")
 
 
@@ -112,12 +93,7 @@ def compute_region_assignments(
     root: str | Path = "data/raw/ndws",
     cache_path: str | Path | None = None,
 ) -> dict:
-    """Per-split index lists of events in each elevation region.
-
-    Returns a dict with keys {split}_{region}, e.g. "train_high_elev",
-    plus a "threshold" entry recording the elevation median used.
-    Cached to data/processed/region_splits.npz.
-    """
+    """Per-split event indices for high/low elevation regions, cached to processed/."""
     cache_path = Path(cache_path or "data/processed/region_splits.npz")
     if cache_path.exists():
         d = np.load(cache_path)
@@ -129,7 +105,6 @@ def compute_region_assignments(
         ds = xr.open_zarr(_zarr_path(split, root), consolidated=False)
         n = ds.sizes["time"]
         var = ds[FEATURE_ORDER[REGION_FEATURE_IDX]]
-        # Streaming reduction so we never materialize all events at once.
         means = np.empty(n, dtype=np.float32)
         chunk = 256
         for i in range(0, n, chunk):
@@ -155,11 +130,10 @@ def compute_region_assignments(
 
 
 class NDWSDataset(Dataset):
-    """Returns (x: (12,64,64) float32, y: (64,64) float32 in {0,1,-1}).
+    """(x: (12,64,64) float32, y: (64,64) float32 in {0,1,-1}).
 
-    -1 in the original Huot et al. release marks unlabeled/QA-fail pixels and is excluded
-    from loss + metrics. The HF mirror appears to have replaced -1 with 0/1 only; we still
-    handle -1 defensively.
+    -1 marks unlabeled / QA-fail pixels in the original release. The HF
+    mirror seems to use only {0,1} but we still handle -1 just in case.
     """
 
     def __init__(self, split: str = "train", root: str | Path = "data/raw/ndws",
@@ -169,10 +143,6 @@ class NDWSDataset(Dataset):
         self.split = split
         self.ds = xr.open_zarr(_zarr_path(split, root), consolidated=False)
         self.full_n = int(self.ds.sizes["time"])
-        # Region filter: events are kept iff their per-event mean elevation is
-        # above (high_elev) or below (low_elev) the train-set median. This makes
-        # PI-GNODE see only mountainous OR only flatland events for cross-region
-        # generalization tests.
         if region is None or region == "all":
             self.region = None
             self._idx_in_zarr = np.arange(self.full_n, dtype=np.int64)
@@ -186,10 +156,8 @@ class NDWSDataset(Dataset):
         self.augment = augment and split == "train"
         self.normalize = normalize
         self._in_memory = in_memory
-        # Build a per-feature multiplier for the proposal's feature-group ablation.
-        # Zeroing post-normalization sets the dropped channel to its training-set
-        # mean (since (mean - mean)/std = 0), which is the cleanest "no-information"
-        # baseline the model could see.
+        # zero a feature group post-normalization == replacing it with its
+        # train-set mean ("no-information" baseline)
         self.drop_mask = np.ones((len(FEATURE_ORDER), 1, 1), dtype=np.float32)
         if drop_feature_group is not None:
             if drop_feature_group not in FEATURE_GROUPS:
@@ -214,7 +182,7 @@ class NDWSDataset(Dataset):
 
     def _load(self, idx: int) -> tuple[np.ndarray, np.ndarray]:
         if self._in_memory:
-            # _cached is already region-filtered, so idx is a local index.
+            # _cached is already region-filtered -> local idx
             stack = self._cached[idx]
             x = stack[: len(FEATURE_ORDER)]
             y = stack[-1]
@@ -232,17 +200,14 @@ class NDWSDataset(Dataset):
         x, y = self._load(idx)
         if self.normalize:
             x = (x - self.mean) / self.std
-        # Apply feature-group drop *after* normalization so dropped channels are
-        # exactly zero (the standardized mean) rather than the raw mean.
+        # drop after normalization so a dropped channel == its standardized mean (0)
         x = x * self.drop_mask
         if self.augment:
-            # Random flips + 90deg rotations preserve fire-spread physics if we also rotate
-            # wind direction (feature index 2 = "th", degrees from north). Cheap +acc gain.
+            # rot/flip the image AND rotate wind direction with it
             k = np.random.randint(4)
             if k:
                 x = np.rot90(x, k=k, axes=(1, 2)).copy()
                 y = np.rot90(y, k=k, axes=(0, 1)).copy()
-                # Rotate wind direction (degrees) by k*90 in the *image* plane.
                 x[2] = (x[2] - 90.0 * k) % 360.0
             if np.random.rand() < 0.5:
                 x = x[:, :, ::-1].copy()

@@ -1,8 +1,4 @@
-"""Metrics for wildfire spread prediction.
-
-Cells with label == -1 are unlabeled and excluded from all metrics.
-Primary metric: AUC-PR (handles severe class imbalance).
-"""
+"""Eval metrics. -1 cells are unlabeled and dropped. Headline metric is AUC-PR."""
 from __future__ import annotations
 
 import numpy as np
@@ -32,7 +28,7 @@ def auc_roc(y_true, y_score) -> float:
 
 
 def csi(y_true, y_pred) -> float:
-    """Critical Success Index = TP / (TP + FP + FN). Standard in hazard forecasting."""
+    """CSI = TP / (TP + FP + FN). Standard hazard-forecasting metric."""
     yt, yp = _flatten_valid(y_true, y_pred)
     yp = (yp >= 0.5).astype(np.int8)
     tp = int(((yt == 1) & (yp == 1)).sum())
@@ -43,7 +39,7 @@ def csi(y_true, y_pred) -> float:
 
 
 def best_f1_threshold(y_true, y_score) -> tuple[float, float]:
-    """Sweep thresholds, return (best_f1, best_threshold)."""
+    """Sweep thresholds -> (best_f1, threshold)."""
     yt, ys = _flatten_valid(y_true, y_score)
     p, r, t = precision_recall_curve(yt, ys)
     f1 = 2 * p * r / np.clip(p + r, 1e-12, None)
@@ -58,7 +54,7 @@ def csi_at_threshold(y_true, y_score, threshold: float) -> float:
 
 
 def all_metrics(y_true, y_score) -> dict:
-    """Compute the full metric panel reported in the paper."""
+    """Full metric panel."""
     yt, ys = _flatten_valid(y_true, y_score)
     f1, thr = best_f1_threshold(yt, ys)
     yp = (ys >= thr).astype(np.int8)

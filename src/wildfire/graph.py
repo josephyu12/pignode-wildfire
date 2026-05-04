@@ -1,12 +1,7 @@
-"""Static grid-graph topology + per-batch physics edge features.
+"""Grid graph + per-batch edge features (wind alignment, slope, NDVI).
 
-The 64x64 grid has identical topology across every event, so we precompute edge_index
-once and reuse. Edge features (wind-edge alignment, slope, NDVI continuity) depend on
-the per-event input features and are computed on the fly.
-
-Feature index convention matches data.ndws.FEATURE_ORDER:
-    0 PrevFireMask, 1 elevation, 2 th(wind dir deg), 3 vs(wind speed),
-    4 tmmn, 5 tmmx, 6 sph, 7 pr, 8 pdsi, 9 NDVI, 10 erc, 11 population
+Topology is the same across every event so we build edge_index once.
+Feature indices follow data.ndws.FEATURE_ORDER.
 """
 from __future__ import annotations
 
@@ -17,7 +12,6 @@ import torch
 H, W = 64, 64
 N = H * W  # 4096
 
-# Indices for physics-relevant features (after normalization, but order unchanged)
 F_FIRE = 0
 F_ELEV = 1
 F_WIND_DIR = 2
@@ -26,11 +20,8 @@ F_NDVI = 9
 
 
 def build_grid_edges(connectivity: int = 8) -> tuple[torch.Tensor, torch.Tensor]:
-    """Build edge_index (2, E) and unit edge directions (E, 2) for a 64x64 grid.
-
-    Edge direction is the unit vector from src to dst in image coordinates
-    (y axis points down). Used to compute wind-edge alignment.
-    """
+    """edge_index (2, E) + unit edge directions (E, 2). Direction is src->dst
+    in image coords (y axis down) so we can dot with wind."""
     rs, cs = torch.meshgrid(torch.arange(H), torch.arange(W), indexing="ij")
     src_list, dst_list, dirs = [], [], []
     for dr in (-1, 0, 1):
@@ -65,18 +56,14 @@ def compute_edge_features(
     x_nodes: torch.Tensor,            # (B, N, F)
     edge_index: torch.Tensor,         # (2, E)
     edge_dirs: torch.Tensor,          # (E, 2)
-    norm_mean: torch.Tensor | None = None,  # to denormalize wind dir + elevation if needed
+    norm_mean: torch.Tensor | None = None,
     norm_std: torch.Tensor | None = None,
     uniform: bool = False,
 ) -> torch.Tensor:
-    """Per-event edge features (B, E, 3): [wind alignment, slope, NDVI continuity].
+    """(B, E, 3) edge features: [wind-alignment, slope, NDVI continuity].
 
-    x_nodes is normalized (mean/std applied), so to get true wind direction (degrees) and
-    elevation differences we de-normalize on the fly. If norm stats are not provided,
-    the values are used as-is (slope/wind direction become arbitrary units, which is
-    still a valid learnable input).
-
-    If `uniform=True`, returns zeros — used for the edge-encoding ablation.
+    De-normalizes wind/elevation on the fly if norm stats are passed.
+    uniform=True -> zeros (ablation).
     """
     B = x_nodes.size(0)
     E = edge_index.size(1)
@@ -85,7 +72,6 @@ def compute_edge_features(
 
     src, dst = edge_index[0], edge_index[1]
 
-    # De-normalize wind direction (degrees) and elevation if stats are given.
     if norm_mean is not None and norm_std is not None:
         nm = norm_mean.to(x_nodes.device)
         ns = norm_std.to(x_nodes.device)
@@ -101,29 +87,25 @@ def compute_edge_features(
         ndvi_src = x_nodes[:, src, F_NDVI]
         ndvi_dst = x_nodes[:, dst, F_NDVI]
 
-    # Wind direction convention: 0=N, 90=E (meteorological "from" -> "to" assumed already toward).
-    # We want wind velocity vector in image coords (y axis down). Toward-direction:
+    # 0=N, 90=E. Want the wind velocity in image coords (y axis down).
     rad = wind_deg * (math.pi / 180.0)
-    wind_x = torch.sin(rad)        # east
-    wind_y = -torch.cos(rad)       # north -> negative y in image coords
-    edx = edge_dirs[:, 0].unsqueeze(0)  # (1, E)
+    wind_x = torch.sin(rad)
+    wind_y = -torch.cos(rad)
+    edx = edge_dirs[:, 0].unsqueeze(0)
     edy = edge_dirs[:, 1].unsqueeze(0)
-    align = wind_x * edx + wind_y * edy        # cosine similarity, (B, E)
-    slope = elev_dst - elev_src                # downhill negative
-    veg_cont = ndvi_src * ndvi_dst             # both vegetated -> high
+    align = wind_x * edx + wind_y * edy
+    slope = elev_dst - elev_src
+    veg_cont = ndvi_src * ndvi_dst
 
-    # Soft-normalize so each feature has comparable magnitude.
-    slope = slope / 100.0   # rough scale: tens of meters between cells
+    slope = slope / 100.0   # ~tens of meters per cell
     return torch.stack([align, slope, veg_cont], dim=-1)
 
 
 def grid_to_nodes(x: torch.Tensor) -> torch.Tensor:
-    """(B, F, H, W) -> (B, N, F)."""
     B, Fin, h, w = x.shape
     return x.permute(0, 2, 3, 1).reshape(B, h * w, Fin)
 
 
 def nodes_to_grid(h: torch.Tensor, height: int = H, width: int = W) -> torch.Tensor:
-    """(B, N, F) -> (B, F, H, W)."""
     B, _, Fout = h.shape
     return h.reshape(B, height, width, Fout).permute(0, 3, 1, 2)

@@ -1,9 +1,7 @@
-"""Traditional + ConvAE baselines.
+"""LR / RF / ConvAE baselines.
 
-LR / RF: pixel-wise classification on flattened 12-feature input. Replicates Huot et al.
-ConvAE: small U-Net-style segmentation network on (12,64,64).
-
-For LR/RF we subsample pixels for tractability; the original dataset has ~76M pixels in train.
+LR + RF run on flattened pixels (subsampled — there are ~76M pixels in train).
+ConvAE is a small U-Net on (12, 64, 64).
 """
 from __future__ import annotations
 
@@ -12,15 +10,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-# ----------------------- LR / RF (sklearn) -----------------------------------
+# --- LR / RF (sklearn) ---
 
 def collect_pixels(loader, max_events: int = 2000, max_pos: int | None = None,
                    neg_per_pos: int = 5, rng_seed: int = 0):
-    """Flatten a small balanced sample of pixels for LR/RF training.
-
-    Each pixel becomes a (12,) feature vector. We oversample fire pixels because
-    of severe class imbalance.
-    """
+    """Flatten pixels into (12,) feature vectors, balanced via positive oversampling."""
     rng = np.random.default_rng(rng_seed)
     X_pos, X_neg = [], []
     n_done = 0
@@ -55,7 +49,7 @@ def collect_pixels(loader, max_events: int = 2000, max_pos: int | None = None,
 
 
 def predict_full_split(loader, model, max_events: int | None = None):
-    """Score every pixel of every (or up to max_events) eval/test event with sklearn model."""
+    """Per-pixel sklearn scores for the full split (or up to max_events)."""
     all_y, all_p = [], []
     n_done = 0
     for x, y in loader:
@@ -70,7 +64,7 @@ def predict_full_split(loader, model, max_events: int | None = None):
     return np.concatenate(all_y), np.concatenate(all_p)
 
 
-# ----------------------- ConvAE ---------------------------------------------
+# --- ConvAE ---
 
 class ConvBlock(nn.Module):
     def __init__(self, c_in, c_out):
@@ -85,7 +79,7 @@ class ConvBlock(nn.Module):
 
 
 class ConvAE(nn.Module):
-    """Small U-Net-style autoencoder; matches the spirit of Huot et al.'s CNN baseline."""
+    """Tiny U-Net for the CNN baseline."""
 
     def __init__(self, in_ch: int = 12, base: int = 32):
         super().__init__()

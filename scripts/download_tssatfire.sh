@@ -17,6 +17,8 @@ RAW_DIR="$DATA_DIR/_raw_geotiffs"
 REPO_DIR="$DATA_DIR/_official_repo"
 TS_LEN=${TS_LEN:-6}
 INTERVAL=${INTERVAL:-3}
+SPLITS=${SPLITS:-"train val test"}
+PYTHON=${PYTHON:-python3}
 # Optional: cap how many event IDs per split get preprocessed. The Kaggle
 # download is all-or-nothing (~71 GB), but the .npy outputs only include
 # events you preprocess. Set MAX_*_EVENTS=10 for a fast sanity-check run.
@@ -27,7 +29,11 @@ MAX_TEST_EVENTS=${MAX_TEST_EVENTS:-0}
 mkdir -p "$DATA_DIR"
 
 # 1. Authenticate with Kaggle and download the dataset.
-if ! command -v kaggle >/dev/null 2>&1; then
+if [ -x ".venv/bin/kaggle" ]; then
+    KAGGLE=".venv/bin/kaggle"
+elif command -v kaggle >/dev/null 2>&1; then
+    KAGGLE="kaggle"
+else
     echo "kaggle CLI not found. Install with: pip install kaggle"
     echo "Then put your kaggle.json in ~/.kaggle/kaggle.json (chmod 600)."
     exit 1
@@ -35,7 +41,7 @@ fi
 mkdir -p "$RAW_DIR"
 if [ ! -f "$RAW_DIR/.downloaded" ]; then
     echo "Downloading TS-SatFire from Kaggle (~71 GB)..."
-    kaggle datasets download -d z789456sx/ts-satfire -p "$RAW_DIR" --unzip
+    "$KAGGLE" datasets download -d z789456sx/ts-satfire -p "$RAW_DIR" --unzip
     touch "$RAW_DIR/.downloaded"
 fi
 
@@ -48,7 +54,7 @@ fi
 #    `/home/z/h/zhao2/CalFireMonitoring/data/`; we override via sed-edit on a
 #    copy. (No upstream patch is desirable -- their hardcoded path must change
 #    locally regardless.)
-SPLITS=(train val test)
+read -r -a SPLITS_ARR <<< "$SPLITS"
 WORK_DIR="$DATA_DIR/_work"
 mkdir -p "$WORK_DIR"
 cp -R "$REPO_DIR"/* "$WORK_DIR/"
@@ -59,7 +65,7 @@ sed -i.bak "s#/home/z/h/zhao2/CalFireMonitoring/data/#$(realpath $RAW_DIR)/#g" \
 # right before the locations are selected. We append a small block; this is
 # safe because the upstream code's `if __name__ == '__main__':` reads
 # train_ids / val_ids / test_ids from module globals.
-python3 - "$WORK_DIR/dataset_gen_pred.py" "$MAX_TRAIN_EVENTS" "$MAX_VAL_EVENTS" "$MAX_TEST_EVENTS" <<'PY'
+"$PYTHON" - "$WORK_DIR/dataset_gen_pred.py" "$MAX_TRAIN_EVENTS" "$MAX_VAL_EVENTS" "$MAX_TEST_EVENTS" <<'PY'
 import sys, pathlib
 path, mt, mv, mte = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4])
 src = pathlib.Path(path).read_text()
@@ -81,14 +87,14 @@ pathlib.Path(path).write_text(src)
 PY
 
 pushd "$WORK_DIR" >/dev/null
-for split in "${SPLITS[@]}"; do
+for split in "${SPLITS_ARR[@]}"; do
     echo "=== preprocessing TS-SatFire split=$split ==="
-    python dataset_gen_pred.py -mode "$split" -ts "$TS_LEN" -it "$INTERVAL"
+    "$PYTHON" dataset_gen_pred.py -mode "$split" -ts "$TS_LEN" -it "$INTERVAL"
 done
 popd >/dev/null
 
 # 4. Move the .npy outputs into the layout our loader expects.
-for split in "${SPLITS[@]}"; do
+for split in "${SPLITS_ARR[@]}"; do
     mkdir -p "$DATA_DIR/$split"
     mv "$WORK_DIR"/dataset/dataset_${split}/pred_*_img_seqtoseq*${TS_LEN}i_${INTERVAL}.npy \
        "$DATA_DIR/$split/" 2>/dev/null || true

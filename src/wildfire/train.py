@@ -1,11 +1,8 @@
-"""Generic training loop shared across ConvAE / GCN / SAGE / GAT / PI-GNODE.
+"""Training loop for all models.
 
-Usage (from repo root):
     python -m wildfire.train --model pignode --epochs 8 --batch-size 16
-    python -m wildfire.train --model gat --epochs 8 --batch-size 32
-    python -m wildfire.train --model convae --epochs 6 --batch-size 32
 
-Outputs: experiments/<exp>/{ckpt.pt, metrics.json, curves.csv, log.txt}
+Output goes to experiments/<exp>/.
 """
 from __future__ import annotations
 
@@ -118,11 +115,10 @@ def train(args):
 
     log(f"=== {args.exp} | model={args.model} | device={device} ===")
 
-    # Norm stats (cached after first call)
     ns = get_norm()
     norm_mean, norm_std = ns["mean"], ns["std"]
 
-    # Data — in_memory=True is ~800x faster than zarr-on-disk slicing
+    # in_memory is way faster than slicing zarr on every batch
     log("loading data into memory...")
     t = time.time()
     drop = args.drop_feature_group or None
@@ -148,11 +144,9 @@ def train(args):
     test_loader = DataLoader(test_ds, batch_size=args.batch_size, shuffle=False,
                              num_workers=args.num_workers)
 
-    # Graph
     edge_index, edge_dirs = build_grid_edges(connectivity=args.connectivity)
     edge_index = edge_index.to(device); edge_dirs = edge_dirs.to(device)
 
-    # Model
     kw = dict(
         hidden=args.hidden, heads=args.heads, n_layers=args.n_layers,
         ode_layers=args.ode_layers,
@@ -200,10 +194,8 @@ def train(args):
             loss_breakdown["focal"].append(loss_focal.item())
 
             if use_soft_mono:
-                # Eq. (4) in differentiable form: penalize σ(z_i) < 1 on burning cells.
-                # Channel 0 of x is normalized PrevFireMask; normalization preserves
-                # binary {0,1} since that channel is excluded from standardization
-                # (see ndws.compute_norm_stats).
+                # differentiable burn-irreversibility: push p>=1 on already-burning cells.
+                # x[:,0] is PrevFireMask (kept binary; not standardized)
                 lm = soft_monotonicity_penalty(logits, x[:, 0])
                 loss = loss + args.soft_mono_weight * lm
                 loss_breakdown["soft_mono"].append(lm.item())
@@ -238,7 +230,7 @@ def train(args):
             best_val_aucpr = m["auc_pr"]
             torch.save({"state_dict": model.state_dict(), "args": vars(args), "metrics": m}, out / "best.pt")
 
-    # Final test eval with best ckpt
+    # final eval on best ckpt
     ckpt = torch.load(out / "best.pt", map_location=device, weights_only=False)
     model.load_state_dict(ckpt["state_dict"])
     test_m = evaluate(model, test_loader, device)
@@ -253,7 +245,7 @@ def parse():
     p = argparse.ArgumentParser()
     p.add_argument("--model", required=True, choices=[
         "convae", "gcn", "sage", "gat",
-        "gcn_edge", "sage_edge", "gat_edge",      # edge-aware variants (proposal §4.2)
+        "gcn_edge", "sage_edge", "gat_edge",   # edge-aware variants
         "pignode",
     ])
     p.add_argument("--exp", default=None)
@@ -267,7 +259,7 @@ def parse():
     p.add_argument("--heads", type=int, default=4)
     p.add_argument("--n-layers", type=int, default=3)
     p.add_argument("--ode-layers", type=int, default=2,
-                   help="number of stacked GAT layers inside the ODE derivative")
+                   help="GAT layers stacked inside dh/dt")
     p.add_argument("--t-end", type=float, default=1.0)
     p.add_argument("--n-eval-steps", type=int, default=2)
     p.add_argument("--connectivity", type=int, default=8)
@@ -276,23 +268,22 @@ def parse():
     p.add_argument("--uniform-edges", action="store_true", default=False)
     p.add_argument("--adjoint", action="store_true", default=False)
     p.add_argument("--no-adjoint", dest="adjoint", action="store_false")
-    p.add_argument("--solver", default="rk4", help="rk4 (default, MPS-safe) or dopri5 (CPU only)")
+    p.add_argument("--solver", default="rk4", help="rk4 (MPS-safe) or dopri5 (CPU only)")
     p.add_argument("--focal-alpha", type=float, default=0.75)
     p.add_argument("--focal-gamma", type=float, default=2.0)
     p.add_argument("--drop-feature-group", default=None,
                    choices=["topo", "weather", "fuel", "human"],
-                   help="proposal §6.3 #2 ablation: zero out a feature group")
+                   help="ablation: zero a feature group")
     p.add_argument("--region", default="all",
                    choices=["all", "high_elev", "low_elev"],
-                   help="elevation-based domain split for cross-region "
-                        "generalization tests; 'all' uses every NDWS event")
+                   help="elevation-based domain split for cross-region tests")
     p.add_argument("--frobenius-weight", type=float, default=0.0,
-                   help="proposal §5 challenge #4: λ on ||dh/dt||^2 along the trajectory")
+                   help="lambda on ||dh/dt||^2")
     p.add_argument("--soft-mono-weight", type=float, default=0.0,
-                   help="weight on differentiable form of eq. (4) burn irreversibility")
-    p.add_argument("--max-steps", type=int, default=None, help="cap iterations per epoch (debug)")
+                   help="weight for the differentiable monotonicity penalty")
+    p.add_argument("--max-steps", type=int, default=None, help="cap steps/epoch (debug)")
     p.add_argument("--eval-batches", type=int, default=None, help="cap eval batches (debug)")
-    p.add_argument("--subset-train", type=int, default=None, help="train on first N events only")
+    p.add_argument("--subset-train", type=int, default=None, help="use first N train events")
     p.add_argument("--in-memory", action="store_true", default=True)
     p.add_argument("--no-in-memory", dest="in_memory", action="store_false")
     args = p.parse_args()

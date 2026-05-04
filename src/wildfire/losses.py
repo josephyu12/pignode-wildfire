@@ -1,9 +1,5 @@
-"""Losses for severe class imbalance: focal + masked BCE.
-
-Also includes the proposal's Frobenius dynamics regularizer (proposal §5
-challenge #4) and a soft monotonicity penalty that approximates eq. (4)
-during training without killing gradients on burning cells.
-"""
+"""Focal/masked BCE for the imbalanced labels, plus the Frobenius dynamics
+regularizer and a soft burn-monotonicity penalty."""
 from __future__ import annotations
 
 import torch
@@ -51,18 +47,10 @@ def soft_monotonicity_penalty(
     prev_fire: torch.Tensor,
     threshold: float = 0.5,
 ) -> torch.Tensor:
-    """Soft analogue of eq. (4) burn irreversibility.
+    """mean_{burning} ReLU(1 - sigmoid(z))  — soft burn-irreversibility.
 
-    Penalizes σ(logits_i) < 1[prev_fire_i = 1] for cells that were burning at t.
-    A differentiable surrogate for `p̂ ≥ p_init` that, unlike the hard inference
-    floor, leaves a learning signal on burning cells. ReLU bottoms out cleanly
-    once σ(z) ≥ 1, so cells that already predict "burning" cost zero.
-
-        L_mono = mean_{i : prev_fire_i = 1} ReLU(1 - σ(z_i))
-
-    Shapes:
-        logits     : (B, H, W) -- raw logits before any monotonicity floor
-        prev_fire  : (B, H, W) -- binary fire mask at t (== x[:, 0])
+    Differentiable surrogate for "p_pred >= p_init on cells already burning".
+    Unlike the hard floor, this still gives gradient on burning cells.
     """
     p = torch.sigmoid(logits)
     burning = (prev_fire > threshold).float()
@@ -72,16 +60,8 @@ def soft_monotonicity_penalty(
 
 
 def frobenius_dynamics_penalty(norms: list[torch.Tensor] | torch.Tensor) -> torch.Tensor:
-    """Frobenius-norm regularizer on the ODE derivative f_θ along the trajectory.
-
-    Proposal §5 challenge #4: "regularize dynamics via Frobenius-norm penalties."
-    Discourages stiff dynamics (large ||dh/dt||) so the adaptive solver does not
-    blow up step counts. We average over all NFE evaluations recorded during the
-    forward solve.
-
-    Accepts either a list of per-call scalar tensors or a stacked 1-D tensor.
-    Returns 0 if the list is empty (model wasn't an ODE).
-    """
+    """Mean ||dh/dt||^2 along the trajectory. Keeps dynamics from getting
+    stiff (which blows up adaptive solver NFE)."""
     if isinstance(norms, list):
         if not norms:
             return torch.zeros((), requires_grad=False)

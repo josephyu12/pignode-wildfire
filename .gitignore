@@ -11,6 +11,7 @@ develop-eggs/
 sdist/
 wheels/
 share/python-wheels/
+video_assets/
 
 # Virtual envs
 .venv/
